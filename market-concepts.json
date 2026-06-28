@@ -1,0 +1,392 @@
+[
+  {
+    "id": "vn_index",
+    "label_vi": "VN-Index",
+    "label_en": "VN-Index",
+    "category": "asset",
+    "role": "main",
+    "aliases": {
+      "vi": ["VN-Index", "chỉ số VN-Index", "thị trường Việt Nam", "sàn HoSE"],
+      "vi_unsigned": ["vn-index", "chi so vn-index", "thi truong viet nam", "san hose"],
+      "en": ["VN-Index", "Vietnam index", "Vietnam stock index", "Ho Chi Minh Stock Exchange"],
+      "universal": ["VNINDEX", "VNI", "HOSE"]
+    }
+  },
+  {
+    "id": "vietnam_stocks",
+    "label_vi": "Chứng khoán",
+    "label_en": "Vietnam stocks",
+    "category": "asset",
+    "role": "main",
+    "aliases": {
+      "vi": ["chứng khoán", "thị trường chứng khoán", "chứng khoán Việt Nam", "thị trường cổ phiếu"],
+      "vi_unsigned": ["chung khoan", "thi truong chung khoan", "chung khoan viet nam", "thi truong co phieu"],
+      "en": ["Vietnam stocks", "Vietnam stock market", "equity market", "stock market"],
+      "universal": ["HOSE", "HNX", "UPCoM"]
+    }
+  },
+  {
+    "id": "stocks",
+    "label_vi": "Cổ phiếu",
+    "label_en": "Stocks",
+    "category": "asset",
+    "role": "main",
+    "aliases": {
+      "vi": ["cổ phiếu", "mã cổ phiếu", "nhóm cổ phiếu", "vốn hóa"],
+      "vi_unsigned": ["co phieu", "ma co phieu", "nhom co phieu", "von hoa"],
+      "en": ["stocks", "shares", "equities", "listed companies"],
+      "universal": ["equity", "ticker"]
+    }
+  },
+  {
+    "id": "liquidity",
+    "label_vi": "Thanh khoản",
+    "label_en": "Liquidity",
+    "category": "driver",
+    "role": "supporting",
+    "aliases": {
+      "vi": ["thanh khoản", "giá trị giao dịch", "khối lượng giao dịch", "dòng tiền"],
+      "vi_unsigned": ["thanh khoan", "gia tri giao dich", "khoi luong giao dich", "dong tien"],
+      "en": ["liquidity", "trading value", "trading volume", "market turnover"],
+      "universal": ["volume", "turnover"]
+    }
+  },
+  {
+    "id": "foreign_investors",
+    "label_vi": "Khối ngoại",
+    "label_en": "Foreign investors",
+    "category": "driver",
+    "role": "supporting",
+    "aliases": {
+      "vi": ["khối ngoại", "nhà đầu tư nước ngoài", "mua ròng", "bán ròng"],
+      "vi_unsigned": ["khoi ngoai", "nha dau tu nuoc ngoai", "mua rong", "ban rong"],
+      "en": ["foreign investors", "foreign net buying", "foreign net selling", "foreign flows"],
+      "universal": ["foreign flow", "ETF flow"]
+    }
+  },
+  {
+    "id": "interest_rate",
+    "label_vi": "Lãi suất",
+    "label_en": "Interest rates",
+    "category": "driver",
+    "role": "supporting",
+    "aliases": {
+      "vi": ["lãi suất", "hạ lãi suất", "tăng lãi suất", "lãi suất điều hành", "lãi suất tiết kiệm"],
+      "vi_unsigned": ["lai suat", "ha lai suat", "tang lai suat", "lai suat dieu hanh", "lai suat tiet kiem"],
+      "en": ["interest rate", "rate cut", "rate hike", "policy rate", "deposit rate"],
+      "universal": ["rates", "bps"]
+    }
+  },
+  {
+    "id": "fx_rate",
+    "label_vi": "Tỷ giá",
+    "label_en": "FX rate",
+    "category": "driver",
+    "role": "supporting",
+    "aliases": {
+      "vi": ["tỷ giá", "tỷ giá USD/VND", "ngoại hối", "thị trường ngoại hối", "giá USD ngân hàng", "đồng USD"],
+      "vi_unsigned": ["ty gia usd/vnd", "ngoai hoi", "thi truong ngoai hoi", "gia usd ngan hang", "dong usd"],
+      "en": ["exchange rate", "exchange rates", "FX rate", "foreign exchange", "forex", "currency market", "currencies", "US dollar", "dollar index", "greenback"],
+      "universal": ["USD/VND", "USDVND", "VND", "EUR/USD", "USD/JPY", "DXY", "USDX"]
+    }
+  },
+  {
+    "id": "fed",
+    "label_vi": "Fed",
+    "label_en": "Federal Reserve",
+    "category": "macro_driver",
+    "role": "supporting",
+    "aliases": {
+      "vi": ["Fed", "Cục Dự trữ Liên bang Mỹ", "cuộc họp Fed", "biên bản Fed", "Chủ tịch Fed Powell"],
+      "vi_unsigned": ["fed", "cuc du tru lien bang my", "cuoc hop fed", "bien ban fed", "chu tich fed powell"],
+      "en": ["Federal Reserve", "the Fed", "FOMC", "Fed meeting", "Fed minutes", "Fed Chair Powell"],
+      "universal": ["FOMC", "Powell"]
+    }
+  },
+  {
+    "id": "usd",
+    "label_vi": "USD",
+    "label_en": "US dollar",
+    "category": "asset",
+    "role": "supporting",
+    "aliases": {
+      "vi": ["đồng USD", "đồng bạc xanh", "chỉ số DXY", "giá USD", "USD Index"],
+      "vi_unsigned": ["dong usd", "dong bac xanh", "chi so dxy", "gia usd", "usd index"],
+      "en": ["US dollar", "dollar index", "greenback", "DXY", "US Dollar Index"],
+      "universal": ["DXY", "USDX"]
+    }
+  },
+  {
+    "id": "bond_yield",
+    "label_vi": "Lợi suất",
+    "label_en": "Bond yields",
+    "category": "driver",
+    "role": "supporting",
+    "aliases": {
+      "vi": ["lợi suất", "lợi suất trái phiếu", "lợi suất kho bạc Mỹ", "trái phiếu chính phủ Mỹ"],
+      "vi_unsigned": ["loi suat", "loi suat trai phieu", "loi suat kho bac my", "trai phieu chinh phu my"],
+      "en": ["bond yield", "Treasury yield", "US yields", "10-year yield"],
+      "universal": ["UST", "10Y", "US10Y"]
+    }
+  },
+  {
+    "id": "gold",
+    "label_vi": "Vàng",
+    "label_en": "Gold",
+    "category": "asset",
+    "role": "main",
+    "aliases": {
+      "vi": ["vàng", "giá vàng", "vàng thế giới", "vàng giao ngay", "vàng miếng", "vàng SJC", "kim loại quý"],
+      "vi_unsigned": ["vang", "gia vang", "vang the gioi", "vang giao ngay", "vang mieng", "vang sjc", "kim loai quy"],
+      "en": ["gold", "gold price", "spot gold", "bullion", "gold futures", "COMEX gold"],
+      "universal": ["XAU/USD", "XAUUSD", "XAU USD"]
+    }
+  },
+  {
+    "id": "silver",
+    "label_vi": "Bạc",
+    "label_en": "Silver",
+    "category": "asset",
+    "role": "main",
+    "aliases": {
+      "vi": ["bạc", "giá bạc", "bạc thế giới", "bạc giao ngay", "bạc 999", "kim loại quý"],
+      "vi_unsigned": ["bac", "gia bac", "bac the gioi", "bac giao ngay", "bac 999", "kim loai quy"],
+      "en": ["silver", "silver price", "spot silver", "silver futures", "COMEX silver"],
+      "universal": ["XAG/USD", "XAGUSD"]
+    }
+  },
+  {
+    "id": "crypto",
+    "label_vi": "Crypto",
+    "label_en": "Crypto",
+    "category": "asset",
+    "role": "main",
+    "aliases": {
+      "vi": ["crypto", "tiền mã hóa", "tiền điện tử", "thị trường crypto"],
+      "vi_unsigned": ["crypto", "tien ma hoa", "tien dien tu", "thi truong crypto"],
+      "en": ["crypto", "cryptocurrency", "crypto market", "digital currency"],
+      "universal": ["BTC", "ETH", "ETF"]
+    }
+  },
+  {
+    "id": "bitcoin",
+    "label_vi": "Bitcoin",
+    "label_en": "Bitcoin",
+    "category": "asset",
+    "role": "main",
+    "aliases": {
+      "vi": ["Bitcoin", "giá Bitcoin", "quỹ ETF Bitcoin"],
+      "vi_unsigned": ["bitcoin", "gia bitcoin", "quy etf bitcoin"],
+      "en": ["Bitcoin", "Bitcoin price", "spot Bitcoin ETF", "Bitcoin ETF"],
+      "universal": ["BTC", "BTC/USD", "BTCUSD"]
+    }
+  },
+  {
+    "id": "ethereum",
+    "label_vi": "Ethereum",
+    "label_en": "Ethereum",
+    "category": "asset",
+    "role": "main",
+    "aliases": {
+      "vi": ["Ethereum", "giá Ethereum", "quỹ ETF Ethereum"],
+      "vi_unsigned": ["ethereum", "gia ethereum", "quy etf ethereum"],
+      "en": ["Ethereum", "Ether", "Ethereum price", "spot Ether ETF"],
+      "universal": ["ETH", "ETH/USD", "ETHUSD"]
+    }
+  },
+  {
+    "id": "digital_assets",
+    "label_vi": "Tài sản số",
+    "label_en": "Digital assets",
+    "category": "asset",
+    "role": "main",
+    "aliases": {
+      "vi": ["tài sản số", "tài sản kỹ thuật số", "token", "blockchain"],
+      "vi_unsigned": ["tai san so", "tai san ky thuat so", "token", "blockchain"],
+      "en": ["digital assets", "tokenized assets", "blockchain assets", "tokens"],
+      "universal": ["ETF", "DeFi", "stablecoin"]
+    }
+  },
+  {
+    "id": "oil",
+    "label_vi": "Dầu",
+    "label_en": "Oil",
+    "category": "asset",
+    "role": "main",
+    "aliases": {
+      "vi": ["dầu", "giá dầu", "dầu thô", "dầu Brent", "dầu WTI", "OPEC"],
+      "vi_unsigned": ["dau", "gia dau", "dau tho", "dau brent", "dau wti", "opec"],
+      "en": ["oil", "oil price", "crude oil", "Brent crude", "WTI crude", "OPEC"],
+      "universal": ["Brent", "WTI", "OPEC+"]
+    }
+  },
+  {
+    "id": "commodities",
+    "label_vi": "Hàng hóa",
+    "label_en": "Commodities",
+    "category": "asset",
+    "role": "main",
+    "aliases": {
+      "vi": ["hàng hóa", "thị trường hàng hóa", "giá hàng hóa", "nguyên liệu thô", "kim loại cơ bản", "kim loại quý", "năng lượng", "giá vàng", "giá bạc", "giá dầu", "dầu thô"],
+      "vi_unsigned": ["hang hoa", "thi truong hang hoa", "gia hang hoa", "nguyen lieu tho", "kim loai co ban", "kim loai quy", "nang luong", "gia vang", "gia bac", "gia dau", "dau tho"],
+      "en": ["commodities", "commodity market", "commodity prices", "raw materials", "base metals", "precious metals", "energy market", "copper", "natural gas", "gold price", "silver price", "oil price", "crude oil", "Brent crude", "WTI crude"],
+      "universal": ["CRB", "COMEX", "NYMEX", "LME", "XAU/USD", "XAG/USD", "Brent", "WTI"]
+    }
+  },
+  {
+    "id": "tariff",
+    "label_vi": "Thuế quan",
+    "label_en": "Tariffs",
+    "category": "driver",
+    "role": "supporting",
+    "aliases": {
+      "vi": ["thuế quan", "áp thuế", "hàng rào thuế quan", "Mỹ - Trung"],
+      "vi_unsigned": ["thue quan", "ap thue", "hang rao thue quan", "my trung"],
+      "en": ["tariff", "tariffs", "trade war", "US-China trade"],
+      "universal": ["US-China", "China tariffs"]
+    }
+  },
+  {
+    "id": "geopolitics",
+    "label_vi": "Địa chính trị",
+    "label_en": "Geopolitics",
+    "category": "driver",
+    "role": "supporting",
+    "aliases": {
+      "vi": ["địa chính trị", "xung đột", "căng thẳng", "Trung Đông", "Ukraine"],
+      "vi_unsigned": ["dia chinh tri", "xung dot", "cang thang", "trung dong", "ukraine"],
+      "en": ["geopolitics", "geopolitical risk", "conflict", "Middle East", "Ukraine"],
+      "universal": ["Israel", "Iran", "Russia", "Ukraine"]
+    }
+  },
+  {
+    "id": "bank",
+    "label_vi": "Ngân hàng",
+    "label_en": "Banks",
+    "category": "asset",
+    "role": "main",
+    "aliases": {
+      "vi": ["ngân hàng", "cổ phiếu ngân hàng", "nhóm ngân hàng", "tín dụng ngân hàng"],
+      "vi_unsigned": ["ngan hang", "co phieu ngan hang", "nhom ngan hang", "tin dung ngan hang"],
+      "en": ["banks", "banking stocks", "banking sector", "credit growth"],
+      "universal": ["NIM", "NPL", "credit"]
+    }
+  },
+  {
+    "id": "credit",
+    "label_vi": "Tín dụng",
+    "label_en": "Credit",
+    "category": "driver",
+    "role": "supporting",
+    "aliases": {
+      "vi": ["tín dụng", "tăng trưởng tín dụng", "cho vay", "room tín dụng"],
+      "vi_unsigned": ["tin dung", "tang truong tin dung", "cho vay", "room tin dung"],
+      "en": ["credit", "credit growth", "lending", "loan growth"],
+      "universal": ["loan", "credit quota"]
+    }
+  },
+  {
+    "id": "macro",
+    "label_vi": "Vĩ mô",
+    "label_en": "Macro",
+    "category": "macro",
+    "role": "supporting",
+    "aliases": {
+      "vi": ["vĩ mô", "kinh tế vĩ mô", "kinh tế", "chính sách tiền tệ"],
+      "vi_unsigned": ["vi mo", "kinh te vi mo", "kinh te", "chinh sach tien te"],
+      "en": ["macro", "macroeconomy", "economy", "monetary policy"],
+      "universal": ["macro", "policy"]
+    }
+  },
+  {
+    "id": "gdp",
+    "label_vi": "GDP",
+    "label_en": "GDP",
+    "category": "macro",
+    "role": "supporting",
+    "aliases": {
+      "vi": ["GDP", "tăng trưởng GDP", "tăng trưởng kinh tế"],
+      "vi_unsigned": ["gdp", "tang truong gdp", "tang truong kinh te"],
+      "en": ["GDP", "GDP growth", "economic growth"],
+      "universal": ["GDP"]
+    }
+  },
+  {
+    "id": "inflation",
+    "label_vi": "Lạm phát",
+    "label_en": "Inflation",
+    "category": "macro",
+    "role": "supporting",
+    "aliases": {
+      "vi": ["lạm phát", "áp lực giá", "giá tiêu dùng"],
+      "vi_unsigned": ["lam phat", "ap luc gia", "gia tieu dung"],
+      "en": ["inflation", "price pressure", "consumer prices"],
+      "universal": ["inflation"]
+    }
+  },
+  {
+    "id": "cpi",
+    "label_vi": "CPI",
+    "label_en": "CPI",
+    "category": "macro",
+    "role": "supporting",
+    "aliases": {
+      "vi": ["CPI", "chỉ số giá tiêu dùng", "lạm phát CPI", "CPI lõi", "dữ liệu lạm phát"],
+      "vi_unsigned": ["cpi", "chi so gia tieu dung", "lam phat cpi", "cpi loi", "du lieu lam phat"],
+      "en": ["CPI", "consumer price index", "core CPI", "US CPI", "CPI report", "inflation data", "inflation report", "PCE inflation"],
+      "universal": ["CPI", "Core CPI", "PCE"]
+    }
+  },
+  {
+    "id": "ppi",
+    "label_vi": "PPI",
+    "label_en": "PPI",
+    "category": "macro",
+    "role": "supporting",
+    "aliases": {
+      "vi": ["PPI", "chỉ số giá sản xuất", "giá sản xuất", "PPI lõi", "chi phí đầu vào"],
+      "vi_unsigned": ["ppi", "chi so gia san xuat", "gia san xuat", "ppi loi", "chi phi dau vao"],
+      "en": ["PPI", "producer price index", "producer prices", "core PPI", "US PPI", "PPI report", "wholesale inflation", "input costs"],
+      "universal": ["PPI", "Core PPI"]
+    }
+  },
+  {
+    "id": "pmi",
+    "label_vi": "PMI",
+    "label_en": "PMI",
+    "category": "macro",
+    "role": "supporting",
+    "aliases": {
+      "vi": ["PMI", "chỉ số PMI", "PMI sản xuất", "PMI dịch vụ"],
+      "vi_unsigned": ["pmi", "chi so pmi", "pmi san xuat", "pmi dich vu"],
+      "en": ["PMI", "purchasing managers index", "manufacturing PMI", "services PMI", "S&P Global PMI", "ISM PMI"],
+      "universal": ["PMI", "ISM"]
+    }
+  },
+  {
+    "id": "jobs",
+    "label_vi": "Việc làm",
+    "label_en": "Jobs",
+    "category": "macro",
+    "role": "supporting",
+    "aliases": {
+      "vi": ["việc làm", "thị trường lao động", "tỷ lệ thất nghiệp", "bảng lương phi nông nghiệp"],
+      "vi_unsigned": ["viec lam", "thi truong lao dong", "ty le that nghiep", "bang luong phi nong nghiep"],
+      "en": ["jobs", "labor market", "unemployment rate", "nonfarm payrolls"],
+      "universal": ["NFP", "payrolls"]
+    }
+  },
+  {
+    "id": "recession",
+    "label_vi": "Suy thoái",
+    "label_en": "Recession",
+    "category": "macro",
+    "role": "supporting",
+    "aliases": {
+      "vi": ["suy thoái", "rủi ro suy thoái", "đình trệ kinh tế", "hạ cánh mềm", "tăng trưởng chậm lại"],
+      "vi_unsigned": ["suy thoai", "rui ro suy thoai", "dinh tre kinh te", "ha canh mem", "tang truong cham lai"],
+      "en": ["recession", "recession risk", "economic slowdown", "slowdown", "soft landing", "hard landing", "stagflation"],
+      "universal": ["recession", "slowdown", "soft landing", "hard landing"]
+    }
+  }
+]
