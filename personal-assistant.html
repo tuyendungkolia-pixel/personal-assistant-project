@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Trợ lý lịch cá nhân</title>
+    <link rel="stylesheet" href="personal-planner.css">
+  </head>
+  <body>
+    <aside class="app-shell">
+      <div>
+        <p class="eyebrow">Personal planner v1</p>
+        <h1>Trợ lý lịch cá nhân</h1>
+        <p class="lede">Xếp lịch học, công việc, deadline, tập luyện và thư giãn theo tuần. Nhập thông tin là lịch tự sắp xếp ngay.</p>
+      </div>
+      <nav class="side-nav" aria-label="Điều hướng nhanh">
+        <a href="#input">Nhập lịch</a>
+        <a href="#calendar">Lịch tuần</a>
+        <a href="#copilot">Gợi ý AI</a>
+        <a href="#habits">Thói quen</a>
+      </nav>
+      <div class="status-card">
+        <strong>Luật v1</strong>
+        <p>Deadline trước, lịch cố định không bị đè, việc lớn được chia nhỏ, nghỉ và tập luyện được chèn vào khoảng trống.</p>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Tuần đang lập</p>
+          <h2>Lập một tuần vừa chạy deadline, vừa còn chỗ để sống.</h2>
+          <p>Nhập các việc bạn biết chắc, thêm deadline và thói quen mong muốn. Trợ lý sẽ tự sắp xếp vào lịch tuần, cảnh báo quá tải và cho bạn chỉnh trực tiếp.</p>
+        </div>
+        <div class="week-picker">
+          <label>
+            <span>Bắt đầu tuần</span>
+            <input id="weekStart" type="date">
+          </label>
+          <button id="planWeek" class="primary-btn" type="button">Sắp xếp lại</button>
+        </div>
+      </section>
+
+      <section class="metrics" aria-label="Tóm tắt tuần">
+        <div>
+          <span id="fixedCount">0</span>
+          <p>Lịch cố định</p>
+        </div>
+        <div>
+          <span id="deadlineCount">0</span>
+          <p>Deadline</p>
+        </div>
+        <div>
+          <span id="habitCount">0</span>
+          <p>Thói quen</p>
+        </div>
+        <div>
+          <span id="loadScore">0%</span>
+          <p>Mức tải tuần</p>
+        </div>
+      </section>
+
+      <section class="panel" id="input">
+        <div class="smart-add-shell">
+          <div class="smart-add-head">
+            <button class="icon-btn" type="button" onclick="location.hash='calendar'" aria-label="Quay lại lịch">‹</button>
+            <div>
+              <h3>Smart Add ✨</h3>
+              <p>AI Personal Schedule Assistant</p>
+            </div>
+            <button id="loadSample" class="icon-btn" type="button" aria-label="Lịch sử / dữ liệu mẫu">↺</button>
+          </div>
+
+          <div class="smart-input">
+            <textarea id="naturalInput" placeholder="Schedule gym at 5 PM tomorrow"></textarea>
+            <button id="clearSmartInput" class="smart-clear" type="button" aria-label="Xóa input">×</button>
+            <button id="parseWithAi" class="smart-submit" type="button" aria-label="Gửi yêu cầu">↑</button>
+          </div>
+          <div id="aiState" class="smart-status">Sẵn sàng</div>
+
+          <section class="smart-section">
+            <h4>AI Suggestions</h4>
+            <div id="smartSuggestions" class="smart-suggestions"></div>
+          </section>
+
+          <section class="smart-section">
+            <h4>Category</h4>
+            <div id="categorySelector" class="category-selector"></div>
+          </section>
+
+          <div id="missingFields" class="missing-fields"></div>
+          <div id="conflictAlert" class="conflict-alert" hidden></div>
+          <div id="alternativeSlot" class="alternative-slot" hidden></div>
+          <div id="smartSuccess" class="smart-success" hidden></div>
+
+          <button id="addSmartEvent" class="add-event-button" type="button" disabled>Add Event</button>
+        </div>
+      </section>
+
+      <section class="panel" id="calendar">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Calendar</p>
+            <h3>Lịch tuần</h3>
+          </div>
+          <div class="button-row">
+            <button id="downloadIcs" class="secondary-btn" type="button">Xuất .ics</button>
+            <select id="clearDate" class="date-inline" aria-label="Ngày cần xóa"></select>
+            <button id="clearDay" class="ghost-btn danger" type="button">Xóa ngày đã chọn</button>
+            <button id="clearWeek" class="ghost-btn danger" type="button">Xóa tuần</button>
+          </div>
+        </div>
+        <div id="scheduleGrid" class="schedule-grid"></div>
+        <div id="warnings" class="warnings"></div>
+      </section>
+
+      <section class="panel" id="copilot">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Calendar Copilot</p>
+            <h3>Chat để tìm/gợi ý hoạt động vào lịch trống</h3>
+          </div>
+        </div>
+        <div class="copilot-shell">
+          <div id="copilotMessages" class="copilot-messages"></div>
+          <div id="copilotOptions" class="copilot-options"></div>
+          <div class="copilot-input">
+            <textarea id="copilotInput" placeholder="Ví dụ: Tôi muốn đi xem triển lãm ở Hà Nội tuần này, gợi ý vài option hợp với lịch trống của tôi"></textarea>
+            <button id="sendCopilot" class="primary-btn" type="button">Gửi</button>
+          </div>
+          <p class="hint">Copilot chỉ thêm vào lịch khi bạn bấm chọn option hoặc nhắn rõ như “thêm option 2 vào lịch”.</p>
+        </div>
+      </section>
+
+      <section class="panel" id="habits">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Habit coach</p>
+            <h3>Theo dõi cân bằng tuần</h3>
+          </div>
+        </div>
+        <div id="habitSummary" class="habit-summary"></div>
+      </section>
+    </main>
+
+    <div id="eventModal" class="event-modal" hidden>
+      <div class="event-modal-backdrop" data-close-event-modal></div>
+      <section class="event-modal-card" aria-label="Chi tiết lịch">
+        <div class="event-modal-head">
+          <div>
+            <p class="eyebrow" id="modalCategory">Calendar</p>
+            <h3 id="modalTitle">Chi tiết lịch</h3>
+          </div>
+          <button class="icon-btn" type="button" data-close-event-modal>Đóng</button>
+        </div>
+        <div class="event-modal-grid">
+          <label class="field wide">
+            <span>Tên task</span>
+            <input id="modalEventTitle" data-modal-field="title">
+          </label>
+          <label class="field">
+            <span>Ngày</span>
+            <input id="modalEventDate" data-modal-field="date" type="date">
+          </label>
+          <label class="field">
+            <span>Bắt đầu</span>
+            <input id="modalEventStart" data-modal-field="start" type="time">
+          </label>
+          <label class="field">
+            <span>Kết thúc</span>
+            <input id="modalEventEnd" data-modal-field="end" type="time">
+          </label>
+          <label class="field">
+            <span>Trạng thái</span>
+            <label class="modal-check"><input id="modalEventCompleted" type="checkbox"> Đã xong</label>
+          </label>
+          <label class="field wide">
+            <span>Ghi chú</span>
+            <textarea id="modalEventNotes" data-modal-field="notes"></textarea>
+          </label>
+        </div>
+        <div class="event-modal-actions">
+          <button id="deleteModalEvent" class="ghost-btn danger" type="button">Xóa event</button>
+          <button id="saveModalEvent" class="primary-btn" type="button">Lưu thay đổi</button>
+        </div>
+      </section>
+    </div>
+
+    <div id="confirmConflictModal" class="event-modal" hidden>
+      <div class="event-modal-backdrop" data-close-conflict-modal></div>
+      <section class="event-modal-card" aria-label="Xác nhận lịch bị trùng">
+        <div class="event-modal-head">
+          <div>
+            <p class="eyebrow">Conflict</p>
+            <h3>Event này vẫn bị trùng lịch</h3>
+          </div>
+          <button class="icon-btn" type="button" data-close-conflict-modal>Đóng</button>
+        </div>
+        <p id="confirmConflictText" class="modal-copy"></p>
+        <div class="event-modal-actions">
+          <button id="cancelConflictAdd" class="ghost-btn" type="button">Cancel</button>
+          <button id="addAnyway" class="ghost-btn danger" type="button">Add Anyway</button>
+          <button id="useSuggestedFromModal" class="primary-btn" type="button">Use Suggested Time</button>
+        </div>
+      </section>
+    </div>
+
+    <div id="sourceModal" class="event-modal" hidden>
+      <div class="event-modal-backdrop" data-close-source-modal></div>
+      <section class="event-modal-card source-modal-card" aria-label="Nguồn tham khảo">
+        <div class="event-modal-head">
+          <div>
+            <p class="eyebrow" id="sourceProvider">Nguồn</p>
+            <h3 id="sourceTitle">Nguồn tham khảo</h3>
+          </div>
+          <button class="icon-btn" type="button" data-close-source-modal>Đóng</button>
+        </div>
+        <div class="source-modal-body">
+          <img id="sourceImage" class="source-image" alt="Ảnh nguồn" hidden>
+          <p id="sourceTime" class="modal-copy"></p>
+          <p id="sourceLocation" class="modal-copy"></p>
+          <p id="sourceDescription" class="modal-copy"></p>
+          <p id="sourceReason" class="modal-copy"></p>
+        </div>
+        <div class="event-modal-actions">
+          <button class="ghost-btn" type="button" data-close-source-modal>Quay lại chat</button>
+          <a id="sourceOpenExternal" class="primary-btn source-open-link" href="#" target="_blank" rel="noopener noreferrer">Mở tab mới</a>
+        </div>
+      </section>
+    </div>
+
+    <script src="personal-planner.js?v=copilot-chat-7"></script>
+  </body>
+</html>

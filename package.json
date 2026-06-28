@@ -1,0 +1,17 @@
+{
+  "name": "kolia-tiktok-midweek",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "dev:next": "next dev -p 5175",
+    "build:next": "next build",
+    "start:next": "next start -p 5175"
+  },
+  "dependencies": {
+    "next": "latest",
+    "openai": "latest",
+    "react": "latest",
+    "react-dom": "latest"
+  }
+}
