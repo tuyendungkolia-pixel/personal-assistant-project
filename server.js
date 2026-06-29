@@ -69,6 +69,17 @@ const internationalDomains = [
 ];
 
 const server = http.createServer(async (req, res) => {
+  const parsedRequestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  if (req.method === "GET" && parsedRequestUrl.pathname === "/api/image-proxy") {
+    try {
+      await proxyImage(parsedRequestUrl.searchParams.get("url"), res);
+    } catch (error) {
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
+      res.end("Image not available");
+    }
+    return;
+  }
+
   if (req.method === "POST" && req.url === "/api/generate") {
     try {
       const body = await readJson(req);
@@ -1142,6 +1153,28 @@ async function fetchText(url) {
   return response.text();
 }
 
+async function proxyImage(rawUrl, res) {
+  if (!rawUrl || !/^https?:\/\//i.test(rawUrl)) throw new Error("Invalid image URL");
+  const imageUrl = new URL(rawUrl);
+  const response = await fetch(imageUrl.href, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 CalendarCopilot/1.0",
+      "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+      "Referer": `${imageUrl.protocol}//${imageUrl.host}/`
+    }
+  });
+  if (!response.ok) throw new Error(`Image fetch failed ${response.status}`);
+  const contentType = response.headers.get("content-type") || "image/jpeg";
+  if (!/^image\//i.test(contentType)) throw new Error("URL is not an image");
+  const bytes = Buffer.from(await response.arrayBuffer());
+  res.writeHead(200, {
+    "Content-Type": contentType,
+    "Content-Length": bytes.length,
+    "Cache-Control": "public, max-age=86400"
+  });
+  res.end(bytes);
+}
+
 async function fetchArticle(url) {
   const html = await fetchText(url);
   const image = firstMatch(html, /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
@@ -1876,6 +1909,8 @@ function copilotRange(message, weekStart) {
   const commandText = normalizeCopilotCommand(message);
   const start = new Date(`${weekStart}T00:00:00+07:00`);
   const end = new Date(start);
+  const monthRange = copilotMonthRange(commandText, start);
+  if (monthRange) return monthRange;
   end.setDate(end.getDate() + 7);
   if (/cuoi tuan|weekend|thu 7|chu nhat/i.test(commandText)) {
     const weekend = new Date(start);
@@ -1883,6 +1918,29 @@ function copilotRange(message, weekStart) {
     return { start: `${plannerInputDate(weekend)}T00:00:00+07:00`, end: `${plannerInputDate(end)}T00:00:00+07:00` };
   }
   return { start: `${plannerInputDate(start)}T00:00:00+07:00`, end: `${plannerInputDate(end)}T00:00:00+07:00` };
+}
+
+function copilotMonthRange(commandText, baseDate) {
+  const monthMatch = commandText.match(/\b(?:thang|month)\s*(1[0-2]|0?[1-9])(?:\s*(?:\/|-|nam|year)\s*(\d{2,4}))?\b/i)
+    || commandText.match(/\b(january|february|march|april|may|june|july|august|september|october|november|december)\b/i);
+  if (!monthMatch) return null;
+  const monthNames = {
+    january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
+    july: 7, august: 8, september: 9, october: 10, november: 11, december: 12
+  };
+  const requestedMonth = monthNames[monthMatch[1]] || Number(monthMatch[1]);
+  if (!requestedMonth || requestedMonth < 1 || requestedMonth > 12) return null;
+  const base = Number.isNaN(baseDate.getTime()) ? new Date() : baseDate;
+  let year = Number(monthMatch[2] || base.getFullYear());
+  if (year && year < 100) year += 2000;
+  const baseMonth = base.getMonth() + 1;
+  if (!monthMatch[2] && requestedMonth < baseMonth - 1) year += 1;
+  const start = new Date(year, requestedMonth - 1, 1);
+  const end = new Date(year, requestedMonth, 1);
+  return {
+    start: `${plannerInputDate(start)}T00:00:00+07:00`,
+    end: `${plannerInputDate(end)}T00:00:00+07:00`
+  };
 }
 
 function normalizeCopilotCommand(value) {
@@ -1973,6 +2031,7 @@ async function openAiWebSearchProvider(message, range) {
   const prompt = [
     "Tìm hoạt động/sự kiện ngoài đời thực và trả JSON array thuần, không markdown.",
     "Chỉ lấy thông tin có nguồn rõ; không bịa địa chỉ, giờ mở cửa, giá.",
+    "Chỉ trả sự kiện/hoạt động đang diễn ra hoặc có lịch phù hợp trong đúng khoảng thời gian bên dưới. Loại bỏ kết quả đã kết thúc trước khoảng này.",
     `Yêu cầu: ${message}`,
     `Thời gian: ${range.start} đến ${range.end}`,
     "Schema: [{\"title\":\"...\",\"type\":\"exhibition|workshop|cafe|exercise|focus|rest|social|other\",\"description\":\"...\",\"location\":\"...\",\"sourceUrl\":\"...\",\"imageUrl\":\"...\",\"openingHours\":\"...\",\"price\":\"...\",\"confidence\":\"low|medium|high\"}]"

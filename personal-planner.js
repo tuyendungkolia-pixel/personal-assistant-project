@@ -72,7 +72,8 @@ function loadState() {
       items,
       schedule,
       warnings,
-      optimizations: Array.isArray(saved.optimizations) ? saved.optimizations : []
+      optimizations: Array.isArray(saved.optimizations) ? saved.optimizations : [],
+      completedEvents: saved.completedEvents && typeof saved.completedEvents === "object" ? saved.completedEvents : {}
     };
     const changed = items.length !== (Array.isArray(saved.items) ? saved.items.length : 0)
       || schedule.length !== (Array.isArray(saved.schedule) ? saved.schedule.length : 0)
@@ -80,7 +81,7 @@ function loadState() {
     if (changed) localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
     return next;
   } catch {
-    return { weekStart, items: [], schedule: [], warnings: [] };
+    return { weekStart, items: [], schedule: [], warnings: [], optimizations: [], completedEvents: {} };
   }
 }
 
@@ -112,6 +113,7 @@ function isMalformedCompactText(value) {
 }
 
 function saveState() {
+  state.completedEvents = state.completedEvents || {};
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
@@ -418,7 +420,8 @@ function planWeek() {
   const warnings = [];
   const optimizations = [];
   state.items = dedupeItems(state.items);
-  const completedBySignature = new Map(state.schedule.map((event) => [eventSignature(event), Boolean(event.completed)]));
+  state.completedEvents = state.completedEvents || {};
+  state.schedule.filter((event) => event.completed).forEach((event) => rememberEventCompleted(event, true));
   const currentWeekItems = state.items.filter(itemRelevantToWeek);
   if (!currentWeekItems.length) {
     state.schedule = [];
@@ -533,7 +536,7 @@ function planWeek() {
 
   state.schedule = sortEvents(events).map((event) => ({
     ...event,
-    completed: completedBySignature.get(eventSignature(event)) || false
+    completed: isEventCompleted(event)
   }));
   state.warnings = warnings;
   state.optimizations = optimizations;
@@ -547,6 +550,34 @@ function autoPlanAndRender() {
 
 function eventSignature(event) {
   return [event.sourceId || "", event.title || "", event.type || "", event.date || "", event.start || ""].join("|");
+}
+
+function eventCompletionKeys(event) {
+  const title = comparableText(String(event?.title || "").replace(/\s*\(\d+(?:\/\d+)?\)\s*$/g, ""));
+  const date = event?.date || "";
+  const start = event?.start || "";
+  const end = event?.end || "";
+  const sourceId = event?.sourceId || "";
+  const type = event?.type || "";
+  return [
+    eventSignature(event),
+    [sourceId, date, start, end].join("|"),
+    [title, date, start, end].join("|"),
+    [title, type, date, start].join("|")
+  ].filter((key, index, keys) => key.replace(/\|/g, "") && keys.indexOf(key) === index);
+}
+
+function isEventCompleted(event) {
+  const completed = state.completedEvents || {};
+  return eventCompletionKeys(event).some((key) => completed[key]) || Boolean(event.completed);
+}
+
+function rememberEventCompleted(event, completed) {
+  state.completedEvents = state.completedEvents || {};
+  eventCompletionKeys(event).forEach((key) => {
+    if (completed) state.completedEvents[key] = true;
+    else delete state.completedEvents[key];
+  });
 }
 
 function scheduleCoversCurrentItems() {
@@ -961,13 +992,14 @@ function renderCopilotBatch(batch) {
 }
 
 function renderCopilotOption(option, index) {
+  const imageUrl = proxiedImageUrl(option.imageUrl);
   return `
     <article class="copilot-option">
       <div>
         <strong>Option ${index + 1} — ${escapeHtml(option.title)}</strong>
         <p>${escapeHtml(formatCopilotOptionTime(option))}</p>
         ${option.location ? `<p>${escapeHtml(option.location)}</p>` : ""}
-        ${option.imageUrl ? `<img class="copilot-option-image" src="${escapeAttr(option.imageUrl)}" alt="">` : ""}
+        ${imageUrl ? `<img class="copilot-option-image" src="${escapeAttr(imageUrl)}" alt="" loading="lazy">` : ""}
         <small>${escapeHtml(option.reason || option.description || "")}</small>
         ${option.sourceUrl ? `<button class="source-link" type="button" data-source-option="${escapeAttr(option.optionId)}">Nguồn</button>` : ""}
       </div>
@@ -1007,9 +1039,10 @@ function openSourceModal(optionId) {
   document.getElementById("sourceDescription").textContent = option.description || "";
   document.getElementById("sourceReason").textContent = option.reason || "";
   const image = document.getElementById("sourceImage");
-  image.hidden = !option.imageUrl;
-  image.src = option.imageUrl || "";
-  image.alt = option.imageUrl ? `Ảnh minh họa cho ${option.title || "nguồn tham khảo"}` : "";
+  const imageUrl = proxiedImageUrl(option.imageUrl);
+  image.hidden = !imageUrl;
+  image.src = imageUrl || "";
+  image.alt = imageUrl ? `Ảnh minh họa cho ${option.title || "nguồn tham khảo"}` : "";
   image.onerror = () => {
     image.hidden = true;
     image.removeAttribute("src");
@@ -1019,6 +1052,14 @@ function openSourceModal(optionId) {
   link.dataset.sourceUrl = option.sourceUrl || "";
   link.hidden = !option.sourceUrl;
   modal.hidden = false;
+}
+
+function proxiedImageUrl(value) {
+  const url = String(value || "").trim();
+  if (!url) return "";
+  if (/^data:/i.test(url) || url.startsWith("/")) return url;
+  if (!/^https?:\/\//i.test(url)) return "";
+  return `/api/image-proxy?url=${encodeURIComponent(url)}`;
 }
 
 function closeSourceModal() {
@@ -1774,12 +1815,15 @@ function toggleEventCompleted(id, completed) {
   const event = state.schedule.find((item) => item.id === id);
   if (!event) return;
   event.completed = completed;
+  rememberEventCompleted(event, completed);
   saveState();
   renderMetrics();
   renderHabitSummary();
 }
 
 function deleteEvent(id) {
+  const event = state.schedule.find((item) => item.id === id);
+  if (event) rememberEventCompleted(event, false);
   state.schedule = state.schedule.filter((event) => event.id !== id);
   saveState();
   renderAll();
@@ -1814,6 +1858,8 @@ function saveEventModal() {
   if (!modal?.dataset.eventId) return;
   const event = state.schedule.find((item) => item.id === modal.dataset.eventId);
   if (!event) return;
+  const wasCompleted = Boolean(event.completed);
+  const previousCompletionKeys = eventCompletionKeys(event);
   event.title = value("modalEventTitle").trim() || event.title;
   event.date = value("modalEventDate") || event.date;
   event.start = normalizeTimeInput(value("modalEventStart"), event.start);
@@ -1824,6 +1870,8 @@ function saveEventModal() {
   event.duration = minutesBetween(event.start, event.end);
   event.notes = value("modalEventNotes");
   event.completed = document.getElementById("modalEventCompleted").checked;
+  if (wasCompleted) previousCompletionKeys.forEach((key) => delete state.completedEvents[key]);
+  rememberEventCompleted(event, event.completed);
   saveState();
   closeEventModal();
   renderAll();
@@ -2052,6 +2100,9 @@ document.getElementById("copilotMessages").addEventListener("click", (event) => 
   const addButton = event.target.closest("[data-add-copilot-option]");
   if (addButton) addCopilotOption(addButton.dataset.addCopilotOption);
 });
+document.getElementById("copilotMessages").addEventListener("error", (event) => {
+  if (event.target.matches(".copilot-option-image")) event.target.hidden = true;
+}, true);
 document.getElementById("sourceModal").addEventListener("click", (event) => {
   if (event.target.matches("[data-close-source-modal]")) closeSourceModal();
 });
