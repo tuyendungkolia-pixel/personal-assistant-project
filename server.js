@@ -213,7 +213,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   const urlPath = decodeURIComponent(req.url.split("?")[0]);
-  const safePath = urlPath === "/" ? "/index.html" : urlPath;
+  const safePath = urlPath === "/" ? "/personal-assistant.html" : urlPath;
   const filePath = path.normalize(path.join(root, safePath));
 
   if (!filePath.startsWith(root)) {
