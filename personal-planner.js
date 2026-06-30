@@ -16,6 +16,7 @@ const WORK_WINDOWS = [
 ];
 const CALENDAR_START_MINUTES = 6 * 60;
 const CALENDAR_END_MINUTES = 22 * 60;
+const CALENDAR_MAX_END_MINUTES = 24 * 60;
 const CALENDAR_PIXELS_PER_MINUTE = 1.05;
 const LIGHT_WINDOWS = [
   { start: "07:00", end: "08:30" },
@@ -1069,6 +1070,14 @@ function closeSourceModal() {
 }
 
 function formatCopilotOptionTime(option) {
+  if (option?.proposedStart && option?.proposedEnd) {
+    const startDateTime = new Date(option.proposedStart);
+    const endDateTime = new Date(option.proposedEnd);
+    if (!Number.isNaN(startDateTime.getTime()) && !Number.isNaN(endDateTime.getTime()) && endDateTime <= startDateTime) {
+      const fixedEnd = new Date(startDateTime.getTime() + 60 * 60 * 1000);
+      option.proposedEnd = `${toInputDate(fixedEnd)}T${timeFromMinutes(fixedEnd.getHours() * 60 + fixedEnd.getMinutes())}:00+07:00`;
+    }
+  }
   const start = formatIsoForDisplay(option.proposedStart);
   const endDate = String(option.proposedEnd || "").slice(0, 10);
   const startDate = String(option.proposedStart || "").slice(0, 10);
@@ -1114,12 +1123,12 @@ function copilotOptionToItem(option) {
   });
 }
 
-function addCopilotOption(optionId) {
+function addCopilotOption(optionId, replyText = "") {
   const option = findCopilotOption(optionId);
   if (!option) return false;
   addParsedItems([copilotOptionToItem(option)]);
   updateCopilotOption(optionId, { status: "confirmed" });
-  copilotState.messages.push({ role: "assistant", content: `Đã thêm "${option.title}" vào lịch.` });
+  copilotState.messages.push({ role: "assistant", content: replyText || `Đã thêm "${option.title}" vào lịch.` });
   saveCopilotState();
   autoPlanAndRender();
   return true;
@@ -1140,11 +1149,6 @@ async function sendCopilotMessage() {
   if (!message) return;
   copilotState.messages.push({ role: "user", content: message });
   copilotState.error = "";
-  if (tryHandleCopilotConfirmation(message)) {
-    input.value = "";
-    renderCopilot();
-    return;
-  }
   input.value = "";
   copilotState.status = "loading";
   saveCopilotState();
@@ -1166,7 +1170,7 @@ async function sendCopilotMessage() {
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Copilot failed");
-    if (data.confirmOptionId) addCopilotOption(data.confirmOptionId);
+    if (data.confirmOptionId) addCopilotOption(data.confirmOptionId, data.reply || "");
     else {
       const batchId = data.batchId || uid("batch");
       const options = Array.isArray(data.pendingOptions) ? data.pendingOptions : [];
@@ -1657,18 +1661,22 @@ function renderSchedule() {
     state.schedule = dedupedSchedule;
     saveState();
   }
-  warnings.innerHTML = [
-    ...state.warnings
-  ].filter(Boolean).map((warning) => `<div class="warning">${escapeHtml(warning)}</div>`).join("");
   const dates = weekDates();
-  const timeAxis = ["6 AM", "8 AM", "10 AM", "12 PM", "2 PM", "4 PM", "6 PM", "8 PM", "10 PM"];
-  const bodyHeight = (CALENDAR_END_MINUTES - CALENDAR_START_MINUTES) * CALENDAR_PIXELS_PER_MINUTE;
+  const weekEvents = state.schedule.filter((event) => dateInCurrentWeek(event.date));
+  const displayRange = calendarDisplayRange(weekEvents);
+  const invalidWarnings = invalidCalendarEventWarnings(weekEvents);
+  warnings.innerHTML = [
+    ...state.warnings,
+    ...invalidWarnings
+  ].filter(Boolean).map((warning) => `<div class="warning">${escapeHtml(warning)}</div>`).join("");
+  const timeAxis = calendarTimeAxis(displayRange);
+  const bodyHeight = (displayRange.end - displayRange.start) * CALENDAR_PIXELS_PER_MINUTE;
   const hourHeight = 120 * CALENDAR_PIXELS_PER_MINUTE;
   grid.innerHTML = `
     <div class="time-axis" aria-hidden="true">
       <div class="day-head spacer"></div>
       <div class="time-body" style="height:${bodyHeight}px;--hour-height:${hourHeight}px">
-        ${timeAxis.map((time, index) => `<span style="top:${index * hourHeight}px">${time}</span>`).join("")}
+        ${timeAxis.map((tick) => `<span style="top:${tick.top}px">${tick.label}</span>`).join("")}
       </div>
     </div>
     ${dates.map((date, index) => {
@@ -1681,7 +1689,7 @@ function renderSchedule() {
           <span>${formatDate(date)}</span>
         </div>
         <div class="day-body" style="height:${bodyHeight}px;--hour-height:${hourHeight}px">
-          ${events.length ? events.map(({ event, layout }) => renderEvent(event, layout)).join("") : ""}
+          ${events.length ? events.map(({ event, layout }) => renderEvent(event, layout, displayRange, bodyHeight)).join("") : ""}
         </div>
       </div>
     `;
@@ -1689,8 +1697,62 @@ function renderSchedule() {
   `;
 }
 
+function calendarDisplayRange(events) {
+  let start = CALENDAR_START_MINUTES;
+  let end = CALENDAR_END_MINUTES;
+  events.forEach((event) => {
+    const eventStart = minutesFromTime(event.start);
+    const eventEnd = minutesFromTime(event.end);
+    if (!Number.isFinite(eventStart) || !Number.isFinite(eventEnd) || eventEnd <= eventStart) return;
+    start = Math.min(start, Math.floor(eventStart / 60) * 60);
+    end = Math.max(end, Math.ceil(eventEnd / 60) * 60);
+  });
+  return {
+    start: Math.max(0, Math.min(CALENDAR_START_MINUTES, start)),
+    end: Math.min(CALENDAR_MAX_END_MINUTES, Math.max(CALENDAR_END_MINUTES, end))
+  };
+}
+
+function calendarTimeAxis(range) {
+  const ticks = [];
+  for (let minute = range.start; minute <= range.end; minute += 120) {
+    ticks.push({
+      label: formatAxisTime(minute),
+      top: (minute - range.start) * CALENDAR_PIXELS_PER_MINUTE
+    });
+  }
+  if (ticks[ticks.length - 1]?.top < (range.end - range.start) * CALENDAR_PIXELS_PER_MINUTE) {
+    ticks.push({
+      label: formatAxisTime(range.end),
+      top: (range.end - range.start) * CALENDAR_PIXELS_PER_MINUTE
+    });
+  }
+  return ticks;
+}
+
+function formatAxisTime(minutes) {
+  if (minutes >= 24 * 60) return "12 AM";
+  const hour = Math.floor(minutes / 60);
+  const suffix = hour >= 12 ? "PM" : "AM";
+  const displayHour = hour % 12 || 12;
+  return `${displayHour} ${suffix}`;
+}
+
+function invalidCalendarEventWarnings(events) {
+  const invalid = events.filter((event) => {
+    const start = minutesFromTime(event.start);
+    const end = minutesFromTime(event.end);
+    return !Number.isFinite(start) || !Number.isFinite(end) || end <= start;
+  });
+  return invalid.slice(0, 3).map((event) => `Bỏ qua lịch "${event.title || "không tên"}" vì giờ kết thúc không hợp lệ.`);
+}
+
 function layoutDayEvents(events) {
-  const sorted = sortEvents(events);
+  const sorted = sortEvents(events).filter((event) => {
+    const start = minutesFromTime(event.start);
+    const end = minutesFromTime(event.end);
+    return Number.isFinite(start) && Number.isFinite(end) && end > start;
+  });
   const groups = [];
 
   sorted.forEach((event) => {
@@ -1727,12 +1789,18 @@ function layoutDayEvents(events) {
   });
 }
 
-function renderEvent(event, layout = { lane: 0, laneCount: 1 }) {
+function renderEvent(event, layout = { lane: 0, laneCount: 1 }, displayRange = { start: CALENDAR_START_MINUTES, end: CALENDAR_END_MINUTES }, bodyHeight = 0) {
   const category = categoryMeta(getCategory(event));
-  const start = Math.max(CALENDAR_START_MINUTES, minutesFromTime(event.start));
-  const end = Math.min(CALENDAR_END_MINUTES, minutesFromTime(event.end));
-  const top = Math.max(0, (start - CALENDAR_START_MINUTES) * CALENDAR_PIXELS_PER_MINUTE);
-  const height = Math.max(46, (end - start) * CALENDAR_PIXELS_PER_MINUTE - 4);
+  const rawStart = minutesFromTime(event.start);
+  const rawEnd = minutesFromTime(event.end);
+  if (!Number.isFinite(rawStart) || !Number.isFinite(rawEnd) || rawEnd <= rawStart) return "";
+  const start = Math.max(displayRange.start, rawStart);
+  const end = Math.min(displayRange.end, rawEnd);
+  if (end <= start) return "";
+  const top = Math.max(0, (start - displayRange.start) * CALENDAR_PIXELS_PER_MINUTE);
+  const availableHeight = Math.max(24, (bodyHeight || ((displayRange.end - displayRange.start) * CALENDAR_PIXELS_PER_MINUTE)) - top - 4);
+  const naturalHeight = Math.max(46, (end - start) * CALENDAR_PIXELS_PER_MINUTE - 4);
+  const height = Math.min(naturalHeight, availableHeight);
   const laneGap = 4;
   const laneWidth = 100 / layout.laneCount;
   const width = `calc(${laneWidth}% - ${layout.laneCount > 1 ? laneGap : 0}px)`;

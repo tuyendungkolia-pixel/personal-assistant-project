@@ -1858,39 +1858,235 @@ async function calendarCopilotChat(body = {}) {
   const wantsAdd = /(?:them|cho vao|luu|chot|add)/i.test(commandText) && /(?:lich|calendar|option)/i.test(commandText);
   if (wantsAdd && optionMatch) {
     const option = pendingOptions[Number(optionMatch[1]) - 1];
+    const reply = await openAiCopilotConfirmReply(message, option);
     return {
       ok: true,
       intent: "confirm_option",
-      reply: option ? `Đã hiểu, bạn muốn thêm "${option.title}" vào lịch.` : "Mình chưa thấy option đó trong danh sách tạm.",
+      reply,
       confirmOptionId: option?.optionId || "",
       pendingOptions,
-      status: "ok",
-      providerReports: []
+      status: option ? "ok" : "empty",
+      providerReports: [{ provider: "openai", status: "ok", message: `openai ${calendarCopilotModel()}: AI xử lý xác nhận` }]
     };
   }
 
   const range = copilotRange(message, weekStart);
-  const freeSlots = copilotFreeSlots(schedule, range.start, range.end, /trien lam|workshop/i.test(commandText) ? 90 : 60);
+  const isExternalIntent = copilotExternalIntent(commandText, pendingOptions);
+  const freeSlots = copilotFreeSlots(schedule, range.start, range.end, isExternalIntent ? 90 : 60);
   const followUp = /tim lai|lọc|loc|them nua|thêm nữa|gan hon|gần hơn|cuoi tuan|cuối tuần|khac|khác/i.test(commandText);
   const contextText = history.slice(-6).map((item) => `${item.role || "user"}: ${item.content || ""}`).join("\n");
   const searchMessage = followUp && contextText ? `${contextText}\nUser follow-up: ${message}` : message;
-  const external = /trien lam|exhibition|su kien|workshop|bao tang|ha noi|hanoi/i.test(commandText) || (followUp && pendingOptions.some((option) => option.sourceUrl));
-  const searchResult = external ? await copilotSearchActivitiesWithProviders(searchMessage, range) : { activities: [], providerReports: [] };
-  const activities = searchResult.activities || [];
-  const pending = activities.length ? copilotActivityOptions(activities, freeSlots) : copilotGenericOptions(message, freeSlots);
+  const aiResult = await openAiCalendarCopilotProvider({
+    message,
+    searchMessage,
+    history,
+    schedule,
+    pendingOptions,
+    range,
+    freeSlots,
+    isExternalIntent,
+    timezone: String(body.timezone || "Asia/Saigon")
+  });
+  const pending = sanitizeCopilotOptions(aiResult.pendingOptions || [], range, commandText);
+  const rangeText = copilotRangeLabel(range);
   return {
     ok: true,
     conversationId,
     batchId: `batch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-    intent: external ? "external_activity_suggestions" : "free_slot_suggestions",
-    reply: pending.length
-      ? `Mình tạo ${pending.length} option tạm. Bạn có thể bấm thêm hoặc nhắn "thêm option 1 vào lịch".`
-      : "Mình chưa tìm được option phù hợp với lịch trống hiện tại.",
+    intent: aiResult.intent || (isExternalIntent ? "external_activity_suggestions" : "free_slot_suggestions"),
+    reply: aiResult.reply || (pending.length
+      ? `Trong khoảng ${rangeText}, mình tạo ${pending.length} option tạm. Bạn có thể bấm thêm hoặc nhắn "thêm option 1 vào lịch".`
+      : `Trong khoảng ${rangeText}, mình chưa tìm được option phù hợp với lịch trống hiện tại.`),
     status: pending.length ? "ok" : "empty",
     freeSlots,
     pendingOptions: pending,
-    providerReports: searchResult.providerReports || []
+    providerReports: aiResult.providerReports || [{ provider: "openai", status: "ok", message: `openai ${calendarCopilotModel()}: AI xử lý` }]
   };
+}
+
+function calendarCopilotModel() {
+  const model = String(process.env.OPENAI_MODEL || "").trim();
+  if (!model) throw new Error("Calendar Copilot cần OPENAI_MODEL trong .env để chat trực tiếp với AI.");
+  return model;
+}
+
+async function openAiCopilotConfirmReply(message, option) {
+  const model = calendarCopilotModel();
+  if (!process.env.OPENAI_API_KEY) throw new Error("Calendar Copilot cần OPENAI_API_KEY trong .env.");
+  const prompt = [
+    "Bạn là Calendar Copilot. Trả lời ngắn bằng tiếng Việt.",
+    "Người dùng đang yêu cầu thêm một option đã gợi ý vào lịch.",
+    `Tin nhắn: ${message}`,
+    `Option: ${option ? JSON.stringify({
+      title: option.title,
+      proposedStart: option.proposedStart,
+      proposedEnd: option.proposedEnd,
+      location: option.location || ""
+    }) : "không tìm thấy option tương ứng"}`,
+    option
+      ? "Hãy xác nhận tự nhiên rằng bạn sẽ thêm option này vào lịch. Không hỏi lại."
+      : "Hãy nói rằng bạn chưa thấy option đó trong danh sách hiện tại và gợi ý người dùng chọn số option đang hiển thị."
+  ].join("\n");
+  const data = await callOpenAiResponses({
+    model,
+    input: prompt,
+    max_output_tokens: 220
+  });
+  return sanitizeGeneratedContent(extractResponseText(data) || (option ? `Mình sẽ thêm "${option.title}" vào lịch.` : "Mình chưa thấy option đó trong danh sách hiện tại."));
+}
+
+async function openAiCalendarCopilotProvider({ message, searchMessage, history, schedule, pendingOptions, range, freeSlots, isExternalIntent, timezone }) {
+  const model = calendarCopilotModel();
+  if (!process.env.OPENAI_API_KEY) throw new Error("Calendar Copilot cần OPENAI_API_KEY trong .env.");
+  const input = buildOpenAiCalendarCopilotPrompt({
+    message,
+    searchMessage,
+    history,
+    schedule,
+    pendingOptions,
+    range,
+    freeSlots,
+    isExternalIntent,
+    timezone
+  });
+  const request = {
+    model,
+    input,
+    max_output_tokens: isExternalIntent ? 1800 : 1200
+  };
+  if (isExternalIntent) {
+    request.tools = [{ type: "web_search_preview", user_location: { type: "approximate", country: "VN", city: "Hanoi", region: "Hanoi" } }];
+  }
+  const data = await callOpenAiResponses(request);
+  const raw = extractResponseText(data) || "{}";
+  const parsed = parseLooseJson(raw);
+  const pending = normalizeAiCopilotOptions(parsed?.pendingOptions || parsed?.options || [], freeSlots);
+  return {
+    intent: parsed?.intent || (isExternalIntent ? "external_activity_suggestions" : "free_slot_suggestions"),
+    reply: sanitizeGeneratedContent(parsed?.reply || ""),
+    pendingOptions: isExternalIntent ? await enrichCopilotActivitiesWithImages(pending) : pending,
+    providerReports: [{ provider: "openai", status: "ok", message: `openai ${model}: AI xử lý${isExternalIntent ? " + web search" : ""}` }]
+  };
+}
+
+function buildOpenAiCalendarCopilotPrompt({ message, searchMessage, history, schedule, pendingOptions, range, freeSlots, isExternalIntent, timezone }) {
+  return [
+    "Bạn là Calendar Copilot, một trợ lý AI cá nhân bằng tiếng Việt.",
+    "Bạn phải tự đọc context lịch, khoảng trống và yêu cầu người dùng để trả lời. Không được nói rằng mình chỉ là logic nội bộ.",
+    "Chỉ trả JSON object thuần, không markdown, không giải thích ngoài JSON.",
+    "",
+    "NHIỆM VỤ:",
+    "- Nếu người dùng xin gợi ý lịch trống: tạo 3-5 pendingOptions cụ thể, đa dạng, có lý do rõ, không dùng title chung chung.",
+    "- Nếu người dùng muốn tìm hoạt động/sự kiện/địa điểm ngoài đời: dùng web search khi được cung cấp, chỉ đưa option có nguồn đáng tin.",
+    "- Nếu không tìm được nguồn đáng tin cho yêu cầu ngoài đời, pendingOptions để [] và reply nói rõ chưa tìm được.",
+    "- Không tự thêm vào lịch. Chỉ tạo option tạm để user bấm Thêm vào lịch hoặc nhắn thêm option.",
+    "- proposedStart/proposedEnd bắt buộc nằm trong một freeSlot đã cho, không vượt 22:00 trừ khi người dùng nói rõ muốn muộn/khuya.",
+    "- Nếu sourceUrl có thì điền sourceUrl. Nếu không có nguồn thì sourceUrl để rỗng.",
+    "",
+    "OUTPUT SCHEMA:",
+    JSON.stringify({
+      intent: "free_slot_suggestions|external_activity_suggestions|refine_search|other",
+      reply: "câu trả lời tiếng Việt ngắn",
+      pendingOptions: [{
+        title: "Tên option cụ thể",
+        type: "exhibition|workshop|cafe|exercise|health|study|focus|rest|social|other",
+        description: "Mô tả ngắn",
+        proposedStart: "YYYY-MM-DDTHH:mm:00+07:00",
+        proposedEnd: "YYYY-MM-DDTHH:mm:00+07:00",
+        location: "",
+        sourceUrl: "",
+        imageUrl: "",
+        provider: "openai",
+        reason: "Vì sao phù hợp với lịch trống"
+      }]
+    }),
+    "",
+    `TIMEZONE: ${timezone}`,
+    `REQUESTED_RANGE: ${range.start} đến ${range.end}`,
+    `USER_MESSAGE: ${message}`,
+    `SEARCH_MESSAGE: ${searchMessage}`,
+    `MODE: ${isExternalIntent ? "external search allowed/expected" : "personal schedule suggestions only"}`,
+    `FREE_SLOTS: ${JSON.stringify(freeSlots.slice(0, 10))}`,
+    `CURRENT_WEEK_SCHEDULE: ${JSON.stringify((schedule || []).slice(0, 80).map((event) => ({
+      title: event.title,
+      type: event.type,
+      category: event.category,
+      date: event.date,
+      start: event.start,
+      end: event.end,
+      completed: Boolean(event.completed)
+    })))}`,
+    `PENDING_OPTIONS: ${JSON.stringify((pendingOptions || []).slice(-12).map((option, index) => ({
+      index: index + 1,
+      title: option.title,
+      proposedStart: option.proposedStart,
+      proposedEnd: option.proposedEnd,
+      sourceUrl: option.sourceUrl || ""
+    })))}`,
+    `RECENT_CHAT: ${JSON.stringify((history || []).slice(-10).map((item) => ({ role: item.role, content: item.content })))}`
+  ].join("\n");
+}
+
+function normalizeAiCopilotOptions(options, freeSlots) {
+  const slotRanges = (freeSlots || []).map((slot) => ({
+    start: new Date(slot.start).getTime(),
+    end: new Date(slot.end).getTime(),
+    fallbackStart: slot.start,
+    fallbackEnd: slot.end
+  }));
+  return (Array.isArray(options) ? options : []).flatMap((item) => {
+    const title = trimText(String(item?.title || "").trim(), 120);
+    if (!title) return [];
+    let proposedStart = normalizeCopilotIso(item?.proposedStart);
+    let proposedEnd = normalizeCopilotIso(item?.proposedEnd);
+    const validSlot = slotRanges.find((slot) => {
+      const startMs = new Date(proposedStart).getTime();
+      const endMs = new Date(proposedEnd).getTime();
+      return Number.isFinite(startMs) && Number.isFinite(endMs) && startMs >= slot.start && endMs <= slot.end && endMs > startMs;
+    });
+    if (!validSlot && slotRanges[0]) {
+      proposedStart = slotRanges[0].fallbackStart;
+      proposedEnd = addMinutesToIso(proposedStart, Math.min(90, Math.max(30, timeToPlannerMinutes(slotRanges[0].fallbackEnd.slice(11, 16)) - timeToPlannerMinutes(slotRanges[0].fallbackStart.slice(11, 16)))));
+    }
+    return [copilotOption({
+      title,
+      type: item.type || "other",
+      description: trimText(String(item.description || "").trim(), 260),
+      proposedStart,
+      proposedEnd,
+      location: trimText(String(item.location || "").trim(), 180),
+      sourceUrl: String(item.sourceUrl || "").trim(),
+      imageUrl: String(item.imageUrl || "").trim(),
+      provider: item.provider || "openai",
+      reason: trimText(String(item.reason || "").trim(), 260)
+    })];
+  }).slice(0, 5);
+}
+
+function normalizeCopilotIso(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::\d{2})?(?:\+07:00|Z)?$/);
+  if (!match) return "";
+  return `${match[1]}T${match[2]}:${match[3]}:00+07:00`;
+}
+
+async function callOpenAiResponses(payload) {
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
+    body: JSON.stringify(payload)
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = data?.error?.message || data?.message || `OpenAI API lỗi HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  return data;
+}
+
+function copilotExternalIntent(commandText, pendingOptions = []) {
+  return /trien lam|exhibition|su kien|event|workshop|bao tang|museum|ha noi|hanoi|cafe|ca phe|quan|dia diem|di choi|di xem|ngoai troi|concert|show/i.test(commandText)
+    || (/tim lai|lọc|loc|them nua|thêm nữa|gan hon|gần hơn|khac|khác/i.test(commandText) && pendingOptions.some((option) => option.sourceUrl));
 }
 
 function plannerStartOfWeek(date) {
@@ -1909,6 +2105,16 @@ function copilotRange(message, weekStart) {
   const commandText = normalizeCopilotCommand(message);
   const start = new Date(`${weekStart}T00:00:00+07:00`);
   const end = new Date(start);
+  if (/thang sau|next month/i.test(commandText)) {
+    const monthStart = new Date(start.getFullYear(), start.getMonth() + 1, 1);
+    const monthEnd = new Date(start.getFullYear(), start.getMonth() + 2, 1);
+    return {
+      start: `${plannerInputDate(monthStart)}T00:00:00+07:00`,
+      end: `${plannerInputDate(monthEnd)}T00:00:00+07:00`
+    };
+  }
+  const multiMonthRange = copilotMultiMonthRange(commandText, start);
+  if (multiMonthRange) return multiMonthRange;
   const monthRange = copilotMonthRange(commandText, start);
   if (monthRange) return monthRange;
   end.setDate(end.getDate() + 7);
@@ -1918,6 +2124,60 @@ function copilotRange(message, weekStart) {
     return { start: `${plannerInputDate(weekend)}T00:00:00+07:00`, end: `${plannerInputDate(end)}T00:00:00+07:00` };
   }
   return { start: `${plannerInputDate(start)}T00:00:00+07:00`, end: `${plannerInputDate(end)}T00:00:00+07:00` };
+}
+
+function copilotMultiMonthRange(commandText, baseDate) {
+  const months = extractRequestedMonths(commandText, baseDate);
+  if (months.length < 2) return null;
+  const sorted = months.sort((a, b) => a.year === b.year ? a.month - b.month : a.year - b.year);
+  const first = sorted[0];
+  const last = sorted[sorted.length - 1];
+  const start = new Date(first.year, first.month - 1, 1);
+  const end = new Date(last.year, last.month, 1);
+  return {
+    start: `${plannerInputDate(start)}T00:00:00+07:00`,
+    end: `${plannerInputDate(end)}T00:00:00+07:00`
+  };
+}
+
+function extractRequestedMonths(commandText, baseDate) {
+  const base = Number.isNaN(baseDate.getTime()) ? new Date() : baseDate;
+  const baseMonth = base.getMonth() + 1;
+  const baseYear = base.getFullYear();
+  const monthNames = {
+    january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
+    july: 7, august: 8, september: 9, october: 10, november: 11, december: 12
+  };
+  const found = [];
+  for (const match of commandText.matchAll(/\b(?:thang|month)\s*(1[0-2]|0?[1-9])(?:\s*(?:\/|-|nam|year)\s*(\d{2,4}))?\b/gi)) {
+    const month = Number(match[1]);
+    let year = Number(match[2] || baseYear);
+    if (year && year < 100) year += 2000;
+    if (!match[2] && month < baseMonth - 1) year += 1;
+    found.push({ month, year });
+  }
+  for (const match of commandText.matchAll(/\b(january|february|march|april|may|june|july|august|september|october|november|december)\b/gi)) {
+    const month = monthNames[match[1].toLowerCase()];
+    let year = baseYear;
+    if (month < baseMonth - 1) year += 1;
+    found.push({ month, year });
+  }
+  const unique = new Map();
+  found.forEach((item) => {
+    if (item.month >= 1 && item.month <= 12) unique.set(`${item.year}-${item.month}`, item);
+  });
+  return [...unique.values()];
+}
+
+function copilotRangeLabel(range) {
+  return `${plannerVietnameseDate(range.start)} - ${plannerVietnameseDate(addMinutesToIso(range.end, -1))}`;
+}
+
+function plannerVietnameseDate(value) {
+  const text = String(value || "");
+  const [year, month, day] = text.slice(0, 10).split("-").map(Number);
+  if (!year || !month || !day) return text.slice(0, 10);
+  return `${String(day).padStart(2, "0")}/${String(month).padStart(2, "0")}/${year}`;
 }
 
 function copilotMonthRange(commandText, baseDate) {
@@ -2011,15 +2271,25 @@ async function copilotSearchActivitiesWithProviders(message, range) {
   } else if (mode === "apify" || mode === "both") {
     providerReports.push({ provider: "apify", status: "skipped", message: "Apify chưa có APIFY_TOKEN/APIFY_ACTOR_ID." });
   }
-  const results = await Promise.all(tasks);
+  let results = await Promise.all(tasks);
+  if (results.every((result) => !(result.items || []).length) && /facebook|fb|fanpage/i.test(normalizeCopilotCommand(message))) {
+    const broadenedMessage = `${message}\nNếu Facebook không có dữ liệu công khai, hãy tìm thêm từ website sự kiện, bảo tàng, phòng tranh, fanpage được index công khai và nguồn báo/website uy tín.`;
+    const retryTasks = [];
+    if (mode === "auto" || mode === "openai" || mode === "both") {
+      retryTasks.push(openAiWebSearchProvider(broadenedMessage, range)
+        .then((items) => ({ provider: "openai", items, retry: true }))
+        .catch((error) => ({ provider: "openai", items: [], error: error.message || "OpenAI retry search failed", retry: true })));
+    }
+    if (retryTasks.length) results = await Promise.all(retryTasks);
+  }
   results.forEach((result) => {
     providerReports.push({
       provider: result.provider,
       status: result.error ? "error" : "ok",
-      message: result.error ? `${result.provider}: ${result.error}` : `${result.provider}: ${result.items.length} kết quả`
+      message: result.error ? `${result.provider}: ${result.error}` : `${result.provider}${result.retry ? " retry" : ""}: ${result.items.length} kết quả`
     });
   });
-  const activities = mergeActivityResults(results.flatMap((result) => result.items || [])).slice(0, 8);
+  const activities = filterActivitiesByRange(mergeActivityResults(results.flatMap((result) => result.items || [])), range).slice(0, 8);
   return {
     activities: await enrichCopilotActivitiesWithImages(activities),
     providerReports
@@ -2111,6 +2381,56 @@ function mergeActivityResults(items) {
   return [...seen.values()].sort((a, b) => Number(Boolean(b.sourceUrl)) - Number(Boolean(a.sourceUrl)));
 }
 
+function filterActivitiesByRange(items, range) {
+  const rangeStart = new Date(range.start).getTime();
+  const rangeEnd = new Date(range.end).getTime();
+  return items.filter((item) => {
+    const extracted = extractActivityDateRanges(item, range.start);
+    if (!extracted.length) {
+      item.confidence = item.confidence || "low";
+      return true;
+    }
+    return extracted.some((period) => period.end >= rangeStart && period.start < rangeEnd);
+  });
+}
+
+function extractActivityDateRanges(item, fallbackIso) {
+  const text = [item.title, item.description, item.openingHours, item.date, item.time, item.sourceUrl]
+    .filter(Boolean)
+    .join(" ");
+  const ranges = [];
+  const baseYear = Number(String(fallbackIso || "").slice(0, 4)) || new Date().getFullYear();
+  const isoRegex = /\b(20\d{2})[-/](0?[1-9]|1[0-2])[-/](0?[1-9]|[12]\d|3[01])\b/g;
+  for (const match of text.matchAll(isoRegex)) {
+    const start = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])).getTime();
+    ranges.push({ start, end: start + 24 * 60 * 60 * 1000 });
+  }
+  const shortRegex = /\b(0?[1-9]|[12]\d|3[01])\s*[/-]\s*(0?[1-9]|1[0-2])(?:\s*[/-]\s*(\d{2,4}))?\b/g;
+  for (const match of text.matchAll(shortRegex)) {
+    const year = match[3] ? Number(match[3].length === 2 ? `20${match[3]}` : match[3]) : baseYear;
+    const start = new Date(year, Number(match[2]) - 1, Number(match[1])).getTime();
+    ranges.push({ start, end: start + 24 * 60 * 60 * 1000 });
+  }
+  return mergeExtractedDateRanges(ranges);
+}
+
+function mergeExtractedDateRanges(ranges) {
+  if (ranges.length < 2) return ranges;
+  const sorted = [...ranges].sort((a, b) => a.start - b.start);
+  const merged = [];
+  for (let index = 0; index < sorted.length; index += 1) {
+    const current = sorted[index];
+    const next = sorted[index + 1];
+    if (next && next.start - current.start <= 370 * 24 * 60 * 60 * 1000) {
+      merged.push({ start: current.start, end: Math.max(next.end, current.end) });
+      index += 1;
+    } else {
+      merged.push(current);
+    }
+  }
+  return merged;
+}
+
 async function enrichCopilotActivitiesWithImages(items) {
   return Promise.all(items.map(async (item) => {
     if (item.imageUrl) {
@@ -2148,7 +2468,7 @@ function copilotActivityOptions(activities, slots) {
       type: activity.type || "other",
       description: activity.description || "",
       proposedStart: slot.start,
-      proposedEnd: addMinutesToIso(slot.start, Math.min(duration, slot.durationMinutes)),
+      proposedEnd: addMinutesToIso(slot.start, Math.min(duration, slot.durationMinutes, 180)),
       location: activity.location || "",
       sourceUrl: activity.sourceUrl || "",
       imageUrl: activity.imageUrl || "",
@@ -2159,17 +2479,118 @@ function copilotActivityOptions(activities, slots) {
 }
 
 function copilotGenericOptions(message, slots) {
-  return slots.slice(0, 5).map((slot) => {
-    const duration = /nghỉ|nghi|relax/i.test(message) ? 60 : 90;
-    return copilotOption({
-      title: /học|hoc|focus|làm việc|lam viec/i.test(message) ? "Focus block / học tập nhẹ" : "Hoạt động cá nhân trong slot trống",
-      type: /nghỉ|nghi|relax/i.test(message) ? "rest" : "other",
-      description: "Gợi ý dựa trên khoảng trống trong lịch hiện tại.",
-      proposedStart: slot.start,
-      proposedEnd: addMinutesToIso(slot.start, Math.min(duration, slot.durationMinutes)),
-      reason: `Bạn đang trống ${slot.durationMinutes} phút: ${slot.label}.`
-    });
-  });
+  const intent = copilotPersonalIntent(message);
+  const usedTitles = new Set();
+  return slots.slice(0, 8).flatMap((slot) => {
+    const suggestion = chooseFreeSlotSuggestion(slot, intent, usedTitles);
+    if (!suggestion) return [];
+    usedTitles.add(suggestion.title);
+    const duration = Math.min(suggestion.duration, Math.max(30, slot.durationMinutes));
+    const proposedStart = suggestionStartIso(slot, suggestion, duration);
+    return [copilotOption({
+      title: suggestion.title,
+      type: suggestion.type,
+      description: suggestion.description,
+      proposedStart,
+      proposedEnd: addMinutesToIso(proposedStart, duration),
+      reason: `${suggestion.reason} Slot trống: ${slot.label}.`
+    })];
+  }).slice(0, 5);
+}
+
+function suggestionStartIso(slot, suggestion, duration) {
+  const date = String(slot.start || "").slice(0, 10);
+  const slotStart = timeToPlannerMinutes(String(slot.start || "").slice(11, 16));
+  const slotEnd = timeToPlannerMinutes(String(slot.end || "").slice(11, 16));
+  const preferred = Number.isFinite(suggestion.preferredMinutes) ? suggestion.preferredMinutes : slotStart;
+  const latestStart = Math.max(slotStart, slotEnd - duration);
+  const start = Math.max(slotStart, Math.min(preferred, latestStart));
+  return `${date}T${plannerMinutesToTime(start)}:00+07:00`;
+}
+
+function copilotPersonalIntent(message) {
+  const text = normalizeCopilotCommand(message);
+  if (/hoc|on tap|focus|lam viec|deep work/.test(text)) return "focus";
+  if (/nghi|relax|thu gian|phuc hoi|me time/.test(text)) return "rest";
+  if (/tap|gym|pilates|yoga|boi|di bo|the thao/.test(text)) return "health";
+  if (/ban be|hen|social|gia dinh/.test(text)) return "social";
+  return "balanced";
+}
+
+function chooseFreeSlotSuggestion(slot, intent, usedTitles) {
+  const start = new Date(slot.start);
+  const hour = Number(String(slot.start).slice(11, 13));
+  const day = start.getDay();
+  const weekend = day === 0 || day === 6;
+  const pool = freeSlotSuggestionPool(hour, weekend).filter((item) => intent === "balanced" || item.intent === intent || item.intent === "balanced");
+  return pool.find((item) => !usedTitles.has(item.title)) || pool[0];
+}
+
+function freeSlotSuggestionPool(hour, weekend) {
+  if (hour < 11) {
+    return [
+      { title: "Đi bộ nhẹ và lên nhịp ngày mới", type: "health", intent: "health", duration: 45, preferredMinutes: 8 * 60, description: "Một block vận động nhẹ để tỉnh táo mà không quá mệt.", reason: "Buổi sáng hợp với vận động nhẹ hoặc chuẩn bị tinh thần." },
+      { title: "Focus block học sâu", type: "study", intent: "focus", duration: 90, preferredMinutes: 9 * 60, description: "Dành cho phần học cần tập trung, ít bị gián đoạn.", reason: "Slot sáng thường hợp với việc cần nhiều năng lượng não." },
+      { title: "Đọc sách hoặc ôn nhẹ", type: "rest", intent: "rest", duration: 60, preferredMinutes: 10 * 60 + 30, description: "Giữ nhịp học mà vẫn nhẹ đầu.", reason: "Khoảng sáng trống có thể dùng để nạp kiến thức chậm." },
+      { title: "Dọn checklist việc nhỏ", type: "other", intent: "balanced", duration: 45, preferredMinutes: 11 * 60, description: "Xử lý các việc nhỏ trước khi chúng chen vào buổi chiều.", reason: "Một slot sáng dài nên tách bớt việc lặt vặt." },
+      { title: "Chuẩn bị bài / tài liệu tuần", type: "study", intent: "focus", duration: 60, preferredMinutes: 13 * 60 + 30, description: "Sắp lại tài liệu, deadline và phần cần học tiếp.", reason: "Nếu slot trống dài, nên dùng một phần để chuẩn bị có chủ đích." },
+      { title: "Nghỉ không màn hình", type: "rest", intent: "rest", duration: 45, preferredMinutes: 16 * 60, description: "Nghỉ mắt, đi dạo ngắn, hoặc ngủ ngắn nếu cần.", reason: "Một khoảng nghỉ chủ động giúp tránh bị kín lịch." }
+    ];
+  }
+  if (hour < 16) {
+    return [
+      { title: weekend ? "Cafe study / đọc sách cuối tuần" : "Cafe study ngắn", type: "study", intent: "focus", duration: 90, preferredMinutes: 14 * 60, description: "Đổi không gian để xử lý một phần việc hoặc học nhẹ.", reason: "Đầu giờ chiều hợp với block vừa phải, ít áp lực." },
+      { title: "Xử lý việc vặt trong tuần", type: "other", intent: "balanced", duration: 45, preferredMinutes: 15 * 60, description: "Gom các việc nhỏ để tránh chúng chen vào giờ học/làm.", reason: "Slot này đủ ngắn để dọn việc phụ." },
+      { title: "Nghỉ phục hồi không màn hình", type: "rest", intent: "rest", duration: 45, preferredMinutes: 15 * 60 + 30, description: "Nghỉ mắt, đi dạo ngắn, hoặc ngủ ngắn nếu cần.", reason: "Sau trưa nên có một block hồi phục để tránh đuối cuối ngày." }
+    ];
+  }
+  if (hour < 20) {
+    return [
+      { title: "Pilates/yoga nhẹ", type: "health", intent: "health", duration: 60, preferredMinutes: 17 * 60 + 30, description: "Tập vừa sức để reset sau ngày học/làm.", reason: "Chiều tối là khung tốt cho vận động nhưng vẫn còn thời gian nghỉ." },
+      { title: "Gặp bạn hoặc ăn tối nhẹ", type: "social", intent: "social", duration: 90, preferredMinutes: 18 * 60 + 30, description: "Một block xã hội vừa phải để cân bằng tuần.", reason: "Slot tối sớm hợp với hoạt động xã hội không quá muộn." },
+      { title: "Tổng kết bài học trong ngày", type: "study", intent: "focus", duration: 60, preferredMinutes: 19 * 60 + 30, description: "Ôn lại phần quan trọng, ghi checklist cho ngày mai.", reason: "Cuối ngày hợp với học nhẹ và tổng kết." }
+    ];
+  }
+  return [
+    { title: "Đọc sách / wind-down", type: "rest", intent: "rest", duration: 45, preferredMinutes: 20 * 60 + 30, description: "Giảm nhịp trước khi ngủ, tránh kéo lịch quá nặng.", reason: "Khung tối muộn nên ưu tiên phục hồi." },
+    { title: "Relax không deadline", type: "rest", intent: "balanced", duration: 60, preferredMinutes: 21 * 60, description: "Nghe nhạc, journaling, hoặc xem nhẹ nhàng có giới hạn.", reason: "Slot này hợp để đóng ngày, không nên nhồi việc nặng." },
+    { title: "Chuẩn bị ngày mai", type: "other", intent: "balanced", duration: 30, preferredMinutes: 21 * 60 + 15, description: "Sắp đồ, rà lịch, chọn 1-2 ưu tiên cho hôm sau.", reason: "Một block ngắn giúp sáng hôm sau đỡ rối." }
+  ];
+}
+
+function sanitizeCopilotOptions(options, range, commandText) {
+  return options.map((option) => sanitizeCopilotOption(option, commandText)).filter((option) => {
+    const start = new Date(option.proposedStart).getTime();
+    const rangeStart = new Date(range.start).getTime();
+    const rangeEnd = new Date(range.end).getTime();
+    return Number.isFinite(start) && start >= rangeStart && start < rangeEnd;
+  }).slice(0, 5);
+}
+
+function sanitizeCopilotOption(option, commandText) {
+  const sanitized = { ...option };
+  let start = String(sanitized.proposedStart || "");
+  let end = String(sanitized.proposedEnd || "");
+  const wantsLate = /dem|khuya|muon|late|23h|24h|11 gio toi|12 gio dem/i.test(commandText);
+  if (!isValidCopilotIso(start)) start = "";
+  if (!isValidCopilotIso(end)) end = "";
+  if (start && (!end || new Date(end) <= new Date(start))) {
+    end = addMinutesToIso(start, 60);
+  }
+  if (start && !wantsLate && timeToPlannerMinutes(start.slice(11, 16)) >= 22 * 60) {
+    start = `${start.slice(0, 10)}T21:00:00+07:00`;
+    end = `${start.slice(0, 10)}T22:00:00+07:00`;
+  }
+  if (start && !wantsLate && timeToPlannerMinutes(end.slice(11, 16)) > 22 * 60 && end.slice(0, 10) === start.slice(0, 10)) {
+    end = `${start.slice(0, 10)}T22:00:00+07:00`;
+  }
+  sanitized.proposedStart = start;
+  sanitized.proposedEnd = end;
+  return sanitized;
+}
+
+function isValidCopilotIso(value) {
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00\+07:00$/.test(String(value || "")) && !Number.isNaN(new Date(value).getTime());
 }
 
 function copilotOption(option) {
