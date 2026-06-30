@@ -80,6 +80,67 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "GET" && parsedRequestUrl.pathname === "/api/sync/status") {
+    const configured = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY && process.env.SUPABASE_SERVICE_ROLE_KEY);
+    sendJson(res, 200, {
+      ok: true,
+      configured,
+      missing: configured ? [] : ["SUPABASE_URL", "SUPABASE_ANON_KEY", "SUPABASE_SERVICE_ROLE_KEY"].filter((key) => !process.env[key])
+    });
+    return;
+  }
+
+  if (req.method === "POST" && parsedRequestUrl.pathname === "/api/auth/signup") {
+    try {
+      const body = await readJson(req);
+      sendJson(res, 200, await supabaseSignup(body));
+    } catch (error) {
+      sendJson(res, 500, { ok: false, error: error.message || "Signup failed" });
+    }
+    return;
+  }
+
+  if (req.method === "POST" && parsedRequestUrl.pathname === "/api/auth/login") {
+    try {
+      const body = await readJson(req);
+      sendJson(res, 200, await supabaseLogin(body));
+    } catch (error) {
+      sendJson(res, 500, { ok: false, error: error.message || "Login failed" });
+    }
+    return;
+  }
+
+  if (req.method === "POST" && parsedRequestUrl.pathname === "/api/auth/refresh") {
+    try {
+      const body = await readJson(req);
+      sendJson(res, 200, await supabaseRefresh(body.refreshToken || body.refresh_token));
+    } catch (error) {
+      sendJson(res, 401, { ok: false, error: error.message || "Refresh failed" });
+    }
+    return;
+  }
+
+  if (req.method === "GET" && parsedRequestUrl.pathname === "/api/planner-state") {
+    try {
+      const user = await requireSupabaseUser(req);
+      sendJson(res, 200, await loadRemotePlannerState(user));
+    } catch (error) {
+      sendJson(res, error.status || 500, { ok: false, error: error.message || "Load planner state failed" });
+    }
+    return;
+  }
+
+  if (req.method === "PUT" && parsedRequestUrl.pathname === "/api/planner-state") {
+    try {
+      const user = await requireSupabaseUser(req);
+      const body = await readJson(req);
+      sendJson(res, 200, await saveRemotePlannerState(user, body));
+    } catch (error) {
+      sendJson(res, error.status || 500, { ok: false, error: error.message || "Save planner state failed" });
+    }
+    return;
+  }
+
   if (req.method === "POST" && req.url === "/api/generate") {
     try {
       const body = await readJson(req);
@@ -729,12 +790,173 @@ function loadEnvFile(filePath) {
     if (separator === -1) return;
     const key = trimmed.slice(0, separator).trim();
     let value = trimmed.slice(separator + 1).trim();
-    if (!key || process.env[key]) return;
+    if (!key || (typeof process.env[key] === "string" && process.env[key].trim())) return;
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
       value = value.slice(1, -1);
     }
     process.env[key] = value;
   });
+}
+
+function supabaseConfig() {
+  const url = String(process.env.SUPABASE_URL || "").trim().replace(/\/+$/, "");
+  const anonKey = String(process.env.SUPABASE_ANON_KEY || "").trim();
+  const serviceRoleKey = String(process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+  const missing = [];
+  if (!url) missing.push("SUPABASE_URL");
+  if (!anonKey) missing.push("SUPABASE_ANON_KEY");
+  if (!serviceRoleKey) missing.push("SUPABASE_SERVICE_ROLE_KEY");
+  if (missing.length) throw new Error(`Thiếu biến Supabase: ${missing.join(", ")}`);
+  return { url, anonKey, serviceRoleKey };
+}
+
+async function supabaseSignup(body = {}) {
+  const email = String(body.email || "").trim().toLowerCase();
+  const password = String(body.password || "");
+  if (!email || !password) throw new Error("Cần email và mật khẩu.");
+  const data = await supabaseAuthFetch("signup", {
+    method: "POST",
+    body: { email, password }
+  });
+  return normalizeSupabaseAuthResult(data, "Đăng ký thành công. Nếu Supabase yêu cầu xác nhận email, hãy xác nhận rồi đăng nhập.");
+}
+
+async function supabaseLogin(body = {}) {
+  const email = String(body.email || "").trim().toLowerCase();
+  const password = String(body.password || "");
+  if (!email || !password) throw new Error("Cần email và mật khẩu.");
+  const data = await supabaseAuthFetch("token?grant_type=password", {
+    method: "POST",
+    body: { email, password }
+  });
+  return normalizeSupabaseAuthResult(data, "Đăng nhập thành công.");
+}
+
+async function supabaseRefresh(refreshToken) {
+  if (!refreshToken) throw new Error("Thiếu refresh token.");
+  const data = await supabaseAuthFetch("token?grant_type=refresh_token", {
+    method: "POST",
+    body: { refresh_token: refreshToken }
+  });
+  return normalizeSupabaseAuthResult(data, "Đã làm mới phiên đăng nhập.");
+}
+
+async function supabaseAuthFetch(pathname, options = {}) {
+  const { url, anonKey } = supabaseConfig();
+  const response = await fetch(`${url}/auth/v1/${pathname}`, {
+    method: options.method || "GET",
+    headers: {
+      "Content-Type": "application/json",
+      "apikey": anonKey,
+      "Authorization": `Bearer ${options.accessToken || anonKey}`
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(data?.error_description || data?.msg || data?.message || `Supabase Auth HTTP ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+  return data;
+}
+
+function normalizeSupabaseAuthResult(data, message) {
+  return {
+    ok: true,
+    message,
+    accessToken: data.access_token || data.session?.access_token || "",
+    refreshToken: data.refresh_token || data.session?.refresh_token || "",
+    expiresIn: data.expires_in || data.session?.expires_in || 0,
+    user: data.user ? { id: data.user.id, email: data.user.email } : null
+  };
+}
+
+function bearerToken(req) {
+  const header = String(req.headers.authorization || "");
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1].trim() : "";
+}
+
+async function requireSupabaseUser(req) {
+  const token = bearerToken(req);
+  if (!token) {
+    const error = new Error("Bạn cần đăng nhập để đồng bộ lịch.");
+    error.status = 401;
+    throw error;
+  }
+  const data = await supabaseAuthFetch("user", { accessToken: token });
+  if (!data?.id) {
+    const error = new Error("Phiên đăng nhập không hợp lệ.");
+    error.status = 401;
+    throw error;
+  }
+  return { id: data.id, email: data.email || "" };
+}
+
+async function loadRemotePlannerState(user) {
+  const { url, serviceRoleKey } = supabaseConfig();
+  const endpoint = `${url}/rest/v1/planner_states?user_id=eq.${encodeURIComponent(user.id)}&select=planner_state,copilot_state,updated_at`;
+  const rows = await supabaseDbFetch(endpoint, { method: "GET", serviceRoleKey });
+  const row = Array.isArray(rows) ? rows[0] : null;
+  return {
+    ok: true,
+    user,
+    found: Boolean(row),
+    plannerState: row?.planner_state || null,
+    copilotState: row?.copilot_state || null,
+    updatedAt: row?.updated_at || ""
+  };
+}
+
+async function saveRemotePlannerState(user, body = {}) {
+  const { url, serviceRoleKey } = supabaseConfig();
+  const endpoint = `${url}/rest/v1/planner_states?on_conflict=user_id`;
+  const payload = {
+    user_id: user.id,
+    planner_state: sanitizeRemoteState(body.plannerState),
+    copilot_state: sanitizeRemoteState(body.copilotState),
+    updated_at: new Date().toISOString()
+  };
+  const rows = await supabaseDbFetch(endpoint, {
+    method: "POST",
+    serviceRoleKey,
+    headers: { "Prefer": "resolution=merge-duplicates,return=representation" },
+    body: payload
+  });
+  const row = Array.isArray(rows) ? rows[0] : null;
+  return {
+    ok: true,
+    user,
+    updatedAt: row?.updated_at || payload.updated_at
+  };
+}
+
+function sanitizeRemoteState(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return value;
+}
+
+async function supabaseDbFetch(endpoint, options = {}) {
+  const serviceRoleKey = options.serviceRoleKey || supabaseConfig().serviceRoleKey;
+  const response = await fetch(endpoint, {
+    method: options.method || "GET",
+    headers: {
+      "Content-Type": "application/json",
+      "apikey": serviceRoleKey,
+      "Authorization": `Bearer ${serviceRoleKey}`,
+      ...(options.headers || {})
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined
+  });
+  const text = await response.text();
+  const data = text ? parseLooseJson(text) : null;
+  if (!response.ok) {
+    const error = new Error(data?.message || data?.hint || `Supabase Database HTTP ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+  return data;
 }
 
 async function enrichRssItem(source, item) {

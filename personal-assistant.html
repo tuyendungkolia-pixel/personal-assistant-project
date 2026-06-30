@@ -19,6 +19,24 @@
         <a href="#copilot">Gợi ý AI</a>
         <a href="#habits">Thói quen</a>
       </nav>
+      <section class="sync-card" id="syncCard" aria-label="Đồng bộ tài khoản">
+        <p class="eyebrow">Sync</p>
+        <strong id="syncTitle">Đồng bộ thiết bị</strong>
+        <p id="syncStatus">Đăng nhập để đồng bộ lịch giữa laptop và điện thoại.</p>
+        <div id="syncForm" class="sync-form">
+          <input id="syncEmail" type="email" autocomplete="email" placeholder="Email">
+          <input id="syncPassword" type="password" autocomplete="current-password" placeholder="Mật khẩu">
+          <div class="sync-actions">
+            <button id="syncLogin" class="primary-btn" type="button">Đăng nhập</button>
+            <button id="syncSignup" class="ghost-btn" type="button">Đăng ký</button>
+          </div>
+        </div>
+        <div id="syncUserBox" class="sync-user" hidden>
+          <span id="syncUserEmail"></span>
+          <button id="syncNow" class="ghost-btn" type="button">Đồng bộ ngay</button>
+          <button id="syncLogout" class="ghost-btn danger" type="button">Đăng xuất</button>
+        </div>
+      </section>
       <div class="status-card">
         <strong>Luật v1</strong>
         <p>Deadline trước, lịch cố định không bị đè, việc lớn được chia nhỏ, nghỉ và tập luyện được chèn vào khoảng trống.</p>
@@ -111,6 +129,11 @@
           </div>
         </div>
         <div id="scheduleGrid" class="schedule-grid"></div>
+        <div class="calendar-resize-control">
+          <label for="calendarHeight">Chiều cao lịch</label>
+          <input id="calendarHeight" type="range" min="70" max="180" step="5" value="105">
+          <span id="calendarHeightValue">105%</span>
+        </div>
         <div id="warnings" class="warnings"></div>
       </section>
 
@@ -229,6 +252,6 @@
       </section>
     </div>
 
-    <script src="personal-planner.js?v=calendar-ai-direct-2"></script>
+    <script src="personal-planner.js?v=supabase-sync-1"></script>
   </body>
 </html>

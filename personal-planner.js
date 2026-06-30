@@ -1,5 +1,6 @@
 const STORAGE_KEY = "personalPlannerV1";
 const COPILOT_STORAGE_KEY = "personalPlannerCopilotV1";
+const AUTH_STORAGE_KEY = "personalPlannerAuthV1";
 const DAY_NAMES = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "CN"];
 const TYPE_LABELS = {
   fixed: "Lịch cố định",
@@ -18,6 +19,8 @@ const CALENDAR_START_MINUTES = 6 * 60;
 const CALENDAR_END_MINUTES = 22 * 60;
 const CALENDAR_MAX_END_MINUTES = 24 * 60;
 const CALENDAR_PIXELS_PER_MINUTE = 1.05;
+const CALENDAR_MIN_PIXELS_PER_MINUTE = 0.7;
+const CALENDAR_MAX_PIXELS_PER_MINUTE = 1.8;
 const LIGHT_WINDOWS = [
   { start: "07:00", end: "08:30" },
   { start: "16:30", end: "20:30" },
@@ -39,6 +42,7 @@ const SMART_CATEGORIES = [
 ];
 
 const state = loadState();
+const authState = loadAuthState();
 const smartAddState = {
   input: "",
   suggestions: [],
@@ -74,7 +78,10 @@ function loadState() {
       schedule,
       warnings,
       optimizations: Array.isArray(saved.optimizations) ? saved.optimizations : [],
-      completedEvents: saved.completedEvents && typeof saved.completedEvents === "object" ? saved.completedEvents : {}
+      completedEvents: saved.completedEvents && typeof saved.completedEvents === "object" ? saved.completedEvents : {},
+      settings: {
+        calendarPixelsPerMinute: normalizeCalendarPixelsPerMinute(saved.settings?.calendarPixelsPerMinute)
+      }
     };
     const changed = items.length !== (Array.isArray(saved.items) ? saved.items.length : 0)
       || schedule.length !== (Array.isArray(saved.schedule) ? saved.schedule.length : 0)
@@ -82,8 +89,14 @@ function loadState() {
     if (changed) localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
     return next;
   } catch {
-    return { weekStart, items: [], schedule: [], warnings: [], optimizations: [], completedEvents: {} };
+    return { weekStart, items: [], schedule: [], warnings: [], optimizations: [], completedEvents: {}, settings: { calendarPixelsPerMinute: CALENDAR_PIXELS_PER_MINUTE } };
   }
+}
+
+function normalizeCalendarPixelsPerMinute(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return CALENDAR_PIXELS_PER_MINUTE;
+  return Math.max(CALENDAR_MIN_PIXELS_PER_MINUTE, Math.min(CALENDAR_MAX_PIXELS_PER_MINUTE, number));
 }
 
 function isMalformedCompactNoteItem(item) {
@@ -116,6 +129,35 @@ function isMalformedCompactText(value) {
 function saveState() {
   state.completedEvents = state.completedEvents || {};
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  queueRemoteSync();
+}
+
+function loadAuthState() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY) || "{}");
+    return {
+      accessToken: String(saved.accessToken || ""),
+      refreshToken: String(saved.refreshToken || ""),
+      email: String(saved.email || ""),
+      userId: String(saved.userId || ""),
+      configured: false,
+      syncing: false,
+      lastSyncAt: String(saved.lastSyncAt || ""),
+      error: ""
+    };
+  } catch {
+    return { accessToken: "", refreshToken: "", email: "", userId: "", configured: false, syncing: false, lastSyncAt: "", error: "" };
+  }
+}
+
+function saveAuthState() {
+  localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({
+    accessToken: authState.accessToken,
+    refreshToken: authState.refreshToken,
+    email: authState.email,
+    userId: authState.userId,
+    lastSyncAt: authState.lastSyncAt
+  }));
 }
 
 function loadCopilotState() {
@@ -148,6 +190,223 @@ function saveCopilotState() {
     messages: copilotState.messages,
     optionBatches: copilotState.optionBatches
   }));
+  queueRemoteSync();
+}
+
+let remoteSyncTimer = null;
+
+function hasAuthSession() {
+  return Boolean(authState.accessToken);
+}
+
+function setSyncStatus(message, tone = "") {
+  const status = document.getElementById("syncStatus");
+  if (!status) return;
+  status.textContent = message;
+  status.dataset.tone = tone;
+}
+
+function renderSyncUi() {
+  const form = document.getElementById("syncForm");
+  const userBox = document.getElementById("syncUserBox");
+  const email = document.getElementById("syncUserEmail");
+  if (!form || !userBox || !email) return;
+  form.hidden = hasAuthSession();
+  userBox.hidden = !hasAuthSession();
+  email.textContent = authState.email || "Đã đăng nhập";
+  if (!authState.configured) {
+    setSyncStatus("Chưa cấu hình Supabase trên server.");
+  } else if (authState.error) {
+    setSyncStatus(authState.error, "error");
+  } else if (authState.syncing) {
+    setSyncStatus("Đang đồng bộ...");
+  } else if (hasAuthSession()) {
+    setSyncStatus(authState.lastSyncAt ? `Đã đồng bộ ${formatSyncTime(authState.lastSyncAt)}.` : "Đã đăng nhập. Lịch sẽ tự đồng bộ.");
+  } else {
+    setSyncStatus("Đăng nhập để đồng bộ lịch giữa laptop và điện thoại.");
+  }
+}
+
+function formatSyncTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("vi-VN", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" }).format(date);
+}
+
+function queueRemoteSync() {
+  if (!hasAuthSession()) return;
+  clearTimeout(remoteSyncTimer);
+  remoteSyncTimer = setTimeout(() => syncRemoteState("push"), 900);
+}
+
+function copilotStateForRemote() {
+  return {
+    conversationId: copilotState.conversationId,
+    messages: copilotState.messages,
+    optionBatches: copilotState.optionBatches
+  };
+}
+
+async function apiJson(pathname, options = {}, retried = false) {
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  if (authState.accessToken) headers.Authorization = `Bearer ${authState.accessToken}`;
+  const response = await fetch(pathname, {
+    method: options.method || "GET",
+    headers,
+    body: options.body ? JSON.stringify(options.body) : undefined
+  });
+  const data = await response.json().catch(() => ({}));
+  if (response.status === 401 && authState.refreshToken && !retried) {
+    const refreshed = await refreshAuthSession();
+    if (refreshed) return apiJson(pathname, options, true);
+  }
+  if (!response.ok) throw new Error(data.error || data.message || `HTTP ${response.status}`);
+  return data;
+}
+
+async function refreshAuthSession() {
+  if (!authState.refreshToken) return false;
+  try {
+    const data = await apiJson("/api/auth/refresh", {
+      method: "POST",
+      body: { refreshToken: authState.refreshToken },
+      headers: {}
+    }, true);
+    applyAuthResult(data);
+    return Boolean(authState.accessToken);
+  } catch {
+    clearAuthSession("Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.");
+    return false;
+  }
+}
+
+function applyAuthResult(data) {
+  authState.accessToken = data.accessToken || "";
+  authState.refreshToken = data.refreshToken || authState.refreshToken || "";
+  authState.email = data.user?.email || authState.email || "";
+  authState.userId = data.user?.id || authState.userId || "";
+  authState.error = "";
+  saveAuthState();
+  renderSyncUi();
+}
+
+function clearAuthSession(message = "") {
+  authState.accessToken = "";
+  authState.refreshToken = "";
+  authState.email = "";
+  authState.userId = "";
+  authState.error = message;
+  saveAuthState();
+  renderSyncUi();
+}
+
+async function initSync() {
+  renderSyncUi();
+  try {
+    const status = await apiJson("/api/sync/status");
+    authState.configured = Boolean(status.configured);
+    authState.error = status.configured ? "" : `Thiếu cấu hình: ${(status.missing || []).join(", ")}`;
+    renderSyncUi();
+    if (authState.configured && hasAuthSession()) await syncRemoteState("pull");
+  } catch (error) {
+    authState.configured = false;
+    authState.error = `Không kiểm tra được đồng bộ: ${error.message}`;
+    renderSyncUi();
+  }
+}
+
+async function syncRemoteState(mode = "push") {
+  if (!hasAuthSession() || !authState.configured) return;
+  authState.syncing = true;
+  authState.error = "";
+  renderSyncUi();
+  try {
+    if (mode === "pull") {
+      const remote = await apiJson("/api/planner-state");
+      if (remote.found && remote.plannerState) {
+        Object.keys(state).forEach((key) => delete state[key]);
+        Object.assign(state, loadStateFromObject(remote.plannerState));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        if (remote.copilotState) {
+          Object.assign(copilotState, loadCopilotStateFromObject(remote.copilotState));
+          localStorage.setItem(COPILOT_STORAGE_KEY, JSON.stringify(copilotStateForRemote()));
+        }
+        renderAll();
+      } else {
+        await syncRemoteState("push");
+        return;
+      }
+    } else {
+      const saved = await apiJson("/api/planner-state", {
+        method: "PUT",
+        body: { plannerState: state, copilotState: copilotStateForRemote() }
+      });
+      authState.lastSyncAt = saved.updatedAt || new Date().toISOString();
+      saveAuthState();
+    }
+  } catch (error) {
+    authState.error = `Đồng bộ lỗi: ${error.message}`;
+  } finally {
+    authState.syncing = false;
+    renderSyncUi();
+  }
+}
+
+function loadStateFromObject(saved = {}) {
+  const currentWeekStart = toInputDate(startOfWeek(new Date()));
+  return {
+    weekStart: saved.weekStart || currentWeekStart,
+    items: Array.isArray(saved.items) ? saved.items : [],
+    schedule: Array.isArray(saved.schedule) ? saved.schedule : [],
+    warnings: Array.isArray(saved.warnings) ? saved.warnings : [],
+    optimizations: Array.isArray(saved.optimizations) ? saved.optimizations : [],
+    completedEvents: saved.completedEvents && typeof saved.completedEvents === "object" ? saved.completedEvents : {},
+    settings: {
+      calendarPixelsPerMinute: normalizeCalendarPixelsPerMinute(saved.settings?.calendarPixelsPerMinute)
+    }
+  };
+}
+
+function loadCopilotStateFromObject(saved = {}) {
+  return {
+    conversationId: saved.conversationId || uid("conversation"),
+    messages: Array.isArray(saved.messages) ? saved.messages : [],
+    optionBatches: Array.isArray(saved.optionBatches) ? saved.optionBatches : [],
+    status: "idle",
+    error: "",
+    activeSource: null
+  };
+}
+
+async function handleSyncLogin(mode) {
+  const email = value("syncEmail").trim();
+  const password = value("syncPassword");
+  if (!email || !password) {
+    authState.error = "Nhập email và mật khẩu trước.";
+    renderSyncUi();
+    return;
+  }
+  authState.syncing = true;
+  authState.error = "";
+  renderSyncUi();
+  try {
+    const data = await apiJson(mode === "signup" ? "/api/auth/signup" : "/api/auth/login", {
+      method: "POST",
+      body: { email, password }
+    });
+    applyAuthResult(data);
+    if (data.accessToken) await syncRemoteState("pull");
+    else {
+      authState.error = data.message || "Đăng ký xong. Hãy xác nhận email rồi đăng nhập.";
+      renderSyncUi();
+    }
+  } catch (error) {
+    authState.error = `${mode === "signup" ? "Đăng ký" : "Đăng nhập"} lỗi: ${error.message}`;
+    renderSyncUi();
+  } finally {
+    authState.syncing = false;
+    renderSyncUi();
+  }
 }
 
 function startOfWeek(date) {
@@ -948,6 +1207,7 @@ function renderAll() {
   ensureCalendarChrome();
   renderWeekRange();
   renderClearDateOptions();
+  renderCalendarResizeControl();
   renderSchedule();
   renderMetrics();
   renderHabitSummary();
@@ -1676,9 +1936,10 @@ function renderSchedule() {
     ...state.warnings,
     ...invalidWarnings
   ].filter(Boolean).map((warning) => `<div class="warning">${escapeHtml(warning)}</div>`).join("");
-  const timeAxis = calendarTimeAxis(displayRange);
-  const bodyHeight = (displayRange.end - displayRange.start) * CALENDAR_PIXELS_PER_MINUTE;
-  const hourHeight = 120 * CALENDAR_PIXELS_PER_MINUTE;
+  const pixelsPerMinute = calendarPixelsPerMinute();
+  const timeAxis = calendarTimeAxis(displayRange, pixelsPerMinute);
+  const bodyHeight = (displayRange.end - displayRange.start) * pixelsPerMinute;
+  const hourHeight = 120 * pixelsPerMinute;
   grid.innerHTML = `
     <div class="time-axis" aria-hidden="true">
       <div class="day-head spacer"></div>
@@ -1696,12 +1957,28 @@ function renderSchedule() {
           <span>${formatDate(date)}</span>
         </div>
         <div class="day-body" style="height:${bodyHeight}px;--hour-height:${hourHeight}px">
-          ${events.length ? events.map(({ event, layout }) => renderEvent(event, layout, displayRange, bodyHeight)).join("") : ""}
+          ${renderCalendarGridLines(timeAxis)}
+          ${events.length ? events.map(({ event, layout }) => renderEvent(event, layout, displayRange, bodyHeight, pixelsPerMinute)).join("") : ""}
         </div>
       </div>
     `;
   }).join("")}
   `;
+}
+
+function calendarPixelsPerMinute() {
+  state.settings = state.settings || {};
+  state.settings.calendarPixelsPerMinute = normalizeCalendarPixelsPerMinute(state.settings.calendarPixelsPerMinute);
+  return state.settings.calendarPixelsPerMinute;
+}
+
+function renderCalendarResizeControl() {
+  const control = document.getElementById("calendarHeight");
+  const label = document.getElementById("calendarHeightValue");
+  if (!control) return;
+  const value = calendarPixelsPerMinute();
+  control.value = String(Math.round(value * 100));
+  if (label) label.textContent = `${Math.round(value * 100)}%`;
 }
 
 function calendarDisplayRange(events) {
@@ -1720,21 +1997,29 @@ function calendarDisplayRange(events) {
   };
 }
 
-function calendarTimeAxis(range) {
+function calendarTimeAxis(range, pixelsPerMinute = CALENDAR_PIXELS_PER_MINUTE) {
   const ticks = [];
   for (let minute = range.start; minute <= range.end; minute += 120) {
     ticks.push({
       label: formatAxisTime(minute),
-      top: (minute - range.start) * CALENDAR_PIXELS_PER_MINUTE
+      top: (minute - range.start) * pixelsPerMinute
     });
   }
-  if (ticks[ticks.length - 1]?.top < (range.end - range.start) * CALENDAR_PIXELS_PER_MINUTE) {
+  if (ticks[ticks.length - 1]?.top < (range.end - range.start) * pixelsPerMinute) {
     ticks.push({
       label: formatAxisTime(range.end),
-      top: (range.end - range.start) * CALENDAR_PIXELS_PER_MINUTE
+      top: (range.end - range.start) * pixelsPerMinute
     });
   }
   return ticks;
+}
+
+function renderCalendarGridLines(timeAxis) {
+  return `
+    <div class="calendar-grid-lines" aria-hidden="true">
+      ${timeAxis.map((tick) => `<span style="top:${tick.top}px"></span>`).join("")}
+    </div>
+  `;
 }
 
 function formatAxisTime(minutes) {
@@ -1747,11 +2032,17 @@ function formatAxisTime(minutes) {
 
 function invalidCalendarEventWarnings(events) {
   const invalid = events.filter((event) => {
+    if (isSleepLikeEvent(event)) return false;
     const start = minutesFromTime(event.start);
     const end = minutesFromTime(event.end);
     return !Number.isFinite(start) || !Number.isFinite(end) || end <= start;
   });
   return invalid.slice(0, 3).map((event) => `Bỏ qua lịch "${event.title || "không tên"}" vì giờ kết thúc không hợp lệ.`);
+}
+
+function isSleepLikeEvent(event) {
+  const text = comparableText([event?.title, event?.notes, event?.type].filter(Boolean).join(" "));
+  return /di ngu|ngu|sleep|bedtime|wind down/.test(text);
 }
 
 function layoutDayEvents(events) {
@@ -1796,7 +2087,7 @@ function layoutDayEvents(events) {
   });
 }
 
-function renderEvent(event, layout = { lane: 0, laneCount: 1 }, displayRange = { start: CALENDAR_START_MINUTES, end: CALENDAR_END_MINUTES }, bodyHeight = 0) {
+function renderEvent(event, layout = { lane: 0, laneCount: 1 }, displayRange = { start: CALENDAR_START_MINUTES, end: CALENDAR_END_MINUTES }, bodyHeight = 0, pixelsPerMinute = CALENDAR_PIXELS_PER_MINUTE) {
   const category = categoryMeta(getCategory(event));
   const rawStart = minutesFromTime(event.start);
   const rawEnd = minutesFromTime(event.end);
@@ -1804,9 +2095,9 @@ function renderEvent(event, layout = { lane: 0, laneCount: 1 }, displayRange = {
   const start = Math.max(displayRange.start, rawStart);
   const end = Math.min(displayRange.end, rawEnd);
   if (end <= start) return "";
-  const top = Math.max(0, (start - displayRange.start) * CALENDAR_PIXELS_PER_MINUTE);
-  const availableHeight = Math.max(24, (bodyHeight || ((displayRange.end - displayRange.start) * CALENDAR_PIXELS_PER_MINUTE)) - top - 4);
-  const naturalHeight = Math.max(46, (end - start) * CALENDAR_PIXELS_PER_MINUTE - 4);
+  const top = Math.max(0, (start - displayRange.start) * pixelsPerMinute);
+  const availableHeight = Math.max(24, (bodyHeight || ((displayRange.end - displayRange.start) * pixelsPerMinute)) - top - 4);
+  const naturalHeight = Math.max(46, (end - start) * pixelsPerMinute - 4);
   const height = Math.min(naturalHeight, availableHeight);
   const laneGap = 4;
   const laneWidth = 100 / layout.laneCount;
@@ -2084,6 +2375,13 @@ document.getElementById("scheduleGrid").addEventListener("click", (event) => {
   const card = event.target.closest("[data-event-id]");
   if (card) openEventModal(card.dataset.eventId);
 });
+document.getElementById("calendarHeight")?.addEventListener("input", (event) => {
+  state.settings = state.settings || {};
+  state.settings.calendarPixelsPerMinute = normalizeCalendarPixelsPerMinute(Number(event.target.value) / 100);
+  saveState();
+  renderCalendarResizeControl();
+  renderSchedule();
+});
 document.getElementById("planWeek").addEventListener("click", planWeek);
 document.getElementById("downloadIcs").addEventListener("click", downloadIcs);
 document.getElementById("parseWithAi").addEventListener("click", parseWithAi);
@@ -2181,9 +2479,19 @@ document.getElementById("copilotMessages").addEventListener("error", (event) => 
 document.getElementById("sourceModal").addEventListener("click", (event) => {
   if (event.target.matches("[data-close-source-modal]")) closeSourceModal();
 });
+document.getElementById("syncLogin")?.addEventListener("click", () => handleSyncLogin("login"));
+document.getElementById("syncSignup")?.addEventListener("click", () => handleSyncLogin("signup"));
+document.getElementById("syncNow")?.addEventListener("click", () => syncRemoteState("push"));
+document.getElementById("syncLogout")?.addEventListener("click", () => clearAuthSession("Đã đăng xuất. Dữ liệu vẫn còn trên thiết bị này."));
+document.getElementById("syncPassword")?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  handleSyncLogin("login");
+});
 
 if (state.items.length && (!state.schedule.length || !scheduleCoversCurrentItems())) {
   planWeek();
 } else {
   renderAll();
 }
+initSync();

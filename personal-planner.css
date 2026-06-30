@@ -166,6 +166,71 @@ h4 {
   font-size: 13px;
 }
 
+.sync-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  margin-bottom: 14px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.sync-card strong {
+  color: #fff;
+}
+
+.sync-card p {
+  margin: 0;
+  color: #cbd7e3;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.sync-card p[data-tone="error"] {
+  color: #fecaca;
+}
+
+.sync-card p[data-tone="success"] {
+  color: #bbf7d0;
+}
+
+.sync-form,
+.sync-user {
+  display: grid;
+  gap: 8px;
+}
+
+.sync-form input {
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--ink);
+  font: inherit;
+}
+
+.sync-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.sync-actions button,
+.sync-user button {
+  min-height: 36px;
+  padding: 8px 10px;
+  border-radius: 8px;
+}
+
+.sync-user span {
+  overflow-wrap: anywhere;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .workspace {
   display: grid;
   gap: 20px;
@@ -1552,7 +1617,7 @@ body {
 #calendar .time-body,
 #calendar .day-body {
   position: relative;
-  min-height: 1008px;
+  min-height: 0;
   background:
     repeating-linear-gradient(
       to bottom,
@@ -1565,6 +1630,21 @@ body {
 
 #calendar .time-body {
   background: #fff;
+}
+
+#calendar .calendar-grid-lines {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+#calendar .calendar-grid-lines span {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: rgba(203, 213, 225, 0.95);
 }
 
 #calendar .time-body span {
@@ -1588,6 +1668,26 @@ body {
   overflow: hidden;
   cursor: pointer;
   box-shadow: 0 4px 12px rgba(20, 31, 56, 0.05);
+}
+
+.calendar-resize-control {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 320px) 48px;
+  gap: 10px;
+  align-items: center;
+  width: fit-content;
+  margin-top: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.calendar-resize-control input {
+  accent-color: var(--accent);
 }
 
 #calendar .event-card:hover {
