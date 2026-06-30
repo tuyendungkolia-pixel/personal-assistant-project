@@ -1098,22 +1098,22 @@ function copilotOptionToItem(option) {
   const end = String(option.proposedEnd || "");
   const date = start.slice(0, 10);
   const startTime = start.slice(11, 16);
-  const endTime = end.slice(11, 16);
+  let endTime = end.slice(11, 16);
+  if (!endTime || minutesFromTime(endTime) <= minutesFromTime(startTime || "09:00")) {
+    endTime = timeFromMinutes(minutesFromTime(startTime || "09:00") + 90);
+  }
   const normalizedType = comparableText(option.type);
-  const type = ["exercise", "health"].includes(normalizedType)
-    ? "habit"
-    : ["rest", "leisure"].includes(normalizedType)
-      ? "rest"
-      : "task";
   return normalizeItem({
     title: option.title,
-    type,
+    type: "fixed",
     date,
     start: startTime || "09:00",
-    end: endTime || timeFromMinutes(minutesFromTime(startTime || "09:00") + 90),
-    duration: minutesBetween(startTime || "09:00", endTime || "10:30"),
+    end: endTime,
+    duration: minutesBetween(startTime || "09:00", endTime),
     priority: "medium",
     notes: [
+      "Calendar Copilot pinned",
+      normalizedType ? `category: ${normalizedType}` : "",
       option.description || "",
       option.location ? `Địa điểm: ${option.location}` : "",
       option.sourceUrl ? `Nguồn: ${option.sourceUrl}` : "",
@@ -1240,8 +1240,15 @@ function shiftWeek(days) {
 
 function getCategory(item) {
   const title = String(item?.title || "").toLowerCase();
+  const notes = comparableText(item?.notes || "");
+  const categoryMatch = notes.match(/category:\s*([a-z0-9_-]+)/i);
+  const category = categoryMatch ? categoryMatch[1] : "";
+  if (/health|exercise|gym|pilates|yoga|run/.test(category)) return "health";
+  if (/study|focus|learning|workshop/.test(category)) return "study";
+  if (/rest|leisure|personal|social|cafe|exhibition/.test(category)) return "leisure";
+  if (/work/.test(category)) return "work";
   if (item?.type === "habit" || /pilates|bơi|boi|gym|yoga|workout|chạy|chay|tập|tap|exercise/.test(title)) return "health";
-  if (item?.type === "rest" || /relax|nghỉ|nghi|movie|game|leisure|gia đình|gia dinh|cafe|đọc sách|doc sach/.test(title)) return "leisure";
+  if (item?.type === "rest" || /relax|nghỉ|nghi|movie|game|leisure|gia đình|gia dinh|cafe|brunch|triển lãm|trien lam|đọc sách|doc sach/.test(title)) return "leisure";
   if (item?.type === "deadline" || /học|hoc|study|bt |bài tập|bai tap|quiz|essay|môn|mon|kiểm tra|kiem tra|thương hiệu|quan hệ|quản trị/.test(title)) return "study";
   return "work";
 }
