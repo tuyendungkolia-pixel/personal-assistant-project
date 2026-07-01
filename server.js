@@ -986,7 +986,7 @@ async function loadRemotePlannerState(user) {
     user,
     found: Boolean(row),
     plannerState: row?.planner_state || null,
-    copilotState: row?.copilot_state || null,
+    copilotState: normalizeCopilotStateForTransport(row?.copilot_state),
     revision: Number(row?.planner_state?._sync?.revision || 0),
     updatedAt: row?.updated_at || ""
   };
@@ -1053,7 +1053,7 @@ async function loadAppPlannerStateFromSupabase(user) {
     user,
     found: Boolean(row),
     plannerState: row?.planner_state || null,
-    copilotState: row?.copilot_state || null,
+    copilotState: normalizeCopilotStateForTransport(row?.copilot_state),
     revision: Number(row?.planner_state?._sync?.revision || 0),
     updatedAt: row?.updated_at || "",
     storage: "supabase"
@@ -1121,7 +1121,7 @@ function loadAppPlannerStateFromFile(user) {
     user,
     found: Boolean(row),
     plannerState: row?.plannerState || null,
-    copilotState: row?.copilotState || null,
+    copilotState: normalizeCopilotStateForTransport(row?.copilotState),
     revision: Number(row?.plannerState?._sync?.revision || 0),
     updatedAt: row?.updatedAt || "",
     storage: "file"
@@ -1160,6 +1160,15 @@ function saveAppPlannerStateToFile(user, body = {}) {
 function sanitizeRemoteState(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return value;
+}
+
+function normalizeCopilotStateForTransport(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return {
+    ...value,
+    messages: mergeCopilotMessages([], value.messages).slice(-80),
+    optionBatches: mergeCopilotBatches([], value.optionBatches).slice(-20)
+  };
 }
 
 function mergePlannerPayload({
@@ -1242,11 +1251,64 @@ function mergeCopilotStates(remoteState = {}, localState = {}, now = new Date().
   return {
     ...remoteState,
     ...localState,
-    messages: mergeEntityArray(remoteState.messages, localState.messages, now, (message) =>
-      message.id || `${message.role || ""}|${message.content || ""}|${message.createdAt || ""}`),
-    optionBatches: mergeEntityArray(remoteState.optionBatches, localState.optionBatches, now, (batch) =>
-      batch.batchId || batch.id || `${batch.createdAt || ""}|${JSON.stringify(batch.options || []).slice(0, 120)}`)
+    messages: mergeCopilotMessages(remoteState.messages, localState.messages).slice(-80),
+    optionBatches: mergeCopilotBatches(remoteState.optionBatches, localState.optionBatches).slice(-20)
   };
+}
+
+function mergeCopilotMessages(remoteMessages, localMessages) {
+  const merged = new Map();
+  [...(Array.isArray(remoteMessages) ? remoteMessages : []), ...(Array.isArray(localMessages) ? localMessages : [])].forEach((raw, index) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+    const content = cleanSyncedText(raw.content);
+    if (!content || hasBrokenSyncedText(content)) return;
+    const item = {
+      ...raw,
+      id: raw.id || `legacy-msg-${index}-${hashSyncKey(`${raw.role || ""}|${content}|${raw.batchId || ""}`)}`,
+      role: raw.role === "user" ? "user" : "assistant",
+      content,
+      createdAt: raw.createdAt || raw.updatedAt || "1970-01-01T00:00:00.000Z",
+      updatedAt: raw.updatedAt || raw.createdAt || "1970-01-01T00:00:00.000Z"
+    };
+    const key = item.id || `${item.role}|${item.content}|${item.batchId || ""}`;
+    const current = merged.get(key);
+    if (!current || stampToMs(item.updatedAt) >= stampToMs(current.updatedAt)) merged.set(key, item);
+  });
+  return [...merged.values()].sort((a, b) => stampToMs(a.createdAt) - stampToMs(b.createdAt));
+}
+
+function mergeCopilotBatches(remoteBatches, localBatches) {
+  const merged = new Map();
+  [...(Array.isArray(remoteBatches) ? remoteBatches : []), ...(Array.isArray(localBatches) ? localBatches : [])].forEach((raw, index) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+    const batchId = raw.batchId || raw.id || `legacy-batch-${index}-${hashSyncKey(JSON.stringify(raw.options || []).slice(0, 500))}`;
+    const item = {
+      ...raw,
+      batchId,
+      query: cleanSyncedText(raw.query),
+      createdAt: raw.createdAt || raw.updatedAt || "1970-01-01T00:00:00.000Z",
+      updatedAt: raw.updatedAt || raw.createdAt || "1970-01-01T00:00:00.000Z",
+      options: Array.isArray(raw.options) ? raw.options : []
+    };
+    const current = merged.get(batchId);
+    if (!current || stampToMs(item.updatedAt) >= stampToMs(current.updatedAt)) merged.set(batchId, item);
+  });
+  return [...merged.values()].sort((a, b) => stampToMs(a.createdAt) - stampToMs(b.createdAt));
+}
+
+function cleanSyncedText(value) {
+  return String(value || "")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function hasBrokenSyncedText(value) {
+  return /\uFFFD|ï¿½/.test(String(value || ""));
+}
+
+function hashSyncKey(value) {
+  return crypto.createHash("sha1").update(String(value || "")).digest("hex").slice(0, 10);
 }
 
 function mergeEntityArray(remoteItems, localItems, now, keyFn) {
@@ -4420,16 +4482,19 @@ function trimText(text, max) {
 
 function readJson(req) {
   return new Promise((resolve, reject) => {
-    let body = "";
+    const chunks = [];
+    let size = 0;
     req.on("data", (chunk) => {
-      body += chunk;
-      if (body.length > 2_000_000) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      size += chunk.length;
+      if (size > 2_000_000) {
         reject(new Error("Payload too large"));
         req.destroy();
       }
     });
     req.on("end", () => {
       try {
+        const body = Buffer.concat(chunks).toString("utf8");
         resolve(JSON.parse(body || "{}"));
       } catch (error) {
         reject(new Error("Invalid JSON"));

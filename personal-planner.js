@@ -302,8 +302,8 @@ function loadCopilotState() {
     const saved = JSON.parse(localStorage.getItem(COPILOT_STORAGE_KEY) || "{}");
     return {
       conversationId: saved.conversationId || fallback.conversationId,
-      messages: Array.isArray(saved.messages) ? saved.messages : [],
-      optionBatches: Array.isArray(saved.optionBatches) ? saved.optionBatches : [],
+      messages: normalizeCopilotMessages(saved.messages),
+      optionBatches: normalizeCopilotBatches(saved.optionBatches),
       status: "idle",
       error: "",
       activeSource: null
@@ -314,6 +314,8 @@ function loadCopilotState() {
 }
 
 function saveCopilotState() {
+  copilotState.messages = normalizeCopilotMessages(copilotState.messages);
+  copilotState.optionBatches = normalizeCopilotBatches(copilotState.optionBatches);
   localStorage.setItem(COPILOT_STORAGE_KEY, JSON.stringify({
     conversationId: copilotState.conversationId,
     messages: copilotState.messages,
@@ -325,6 +327,7 @@ function saveCopilotState() {
 let remoteSyncTimer = null;
 let syncReady = false;
 let syncInFlight = false;
+let copilotRequestInFlight = false;
 
 function hasAuthSession() {
   return Boolean(authState.accessToken);
@@ -373,9 +376,128 @@ function queueRemoteSync() {
 function copilotStateForRemote() {
   return {
     conversationId: copilotState.conversationId,
-    messages: copilotState.messages,
-    optionBatches: copilotState.optionBatches
+    messages: normalizeCopilotMessages(copilotState.messages),
+    optionBatches: normalizeCopilotBatches(copilotState.optionBatches)
   };
+}
+
+function makeCopilotMessage(role, content, extra = {}) {
+  const stamp = syncStamp();
+  return {
+    id: extra.id || uid("msg"),
+    role,
+    content: cleanCopilotText(content),
+    createdAt: extra.createdAt || stamp,
+    updatedAt: extra.updatedAt || stamp,
+    ...extra
+  };
+}
+
+function cleanCopilotText(value) {
+  return String(value || "")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function hasBrokenEncoding(value) {
+  return /\uFFFD|ï¿½/.test(String(value || ""));
+}
+
+function legacyCopilotId(prefix, value) {
+  return `${prefix}-legacy-${simpleHash(value)}`;
+}
+
+function simpleHash(value) {
+  let hash = 5381;
+  const text = String(value || "");
+  for (let index = 0; index < text.length; index += 1) {
+    hash = ((hash << 5) + hash) ^ text.charCodeAt(index);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function normalizeCopilotMessages(messages) {
+  const result = [];
+  const seen = new Map();
+  (Array.isArray(messages) ? messages : []).forEach((raw) => {
+    if (!raw || typeof raw !== "object") return;
+    const content = cleanCopilotText(raw.content);
+    if (!content) return;
+    if (hasBrokenEncoding(content)) return;
+    const message = {
+      ...raw,
+      id: raw.id || legacyCopilotId("msg", `${raw.role || ""}|${content}|${raw.batchId || ""}`),
+      role: raw.role === "user" ? "user" : "assistant",
+      content,
+      createdAt: raw.createdAt || raw.updatedAt || "1970-01-01T00:00:00.000Z",
+      updatedAt: raw.updatedAt || raw.createdAt || "1970-01-01T00:00:00.000Z"
+    };
+    const key = `${message.role}|${message.content}|${message.batchId || ""}`;
+    const existingIndex = seen.get(key);
+    if (existingIndex === undefined) {
+      seen.set(key, result.length);
+      result.push(message);
+    } else if (stampToClientMs(message.updatedAt) >= stampToClientMs(result[existingIndex].updatedAt)) {
+      result[existingIndex] = message;
+    }
+  });
+  return result
+    .sort((a, b) => stampToClientMs(a.createdAt) - stampToClientMs(b.createdAt))
+    .slice(-80);
+}
+
+function normalizeCopilotBatches(batches) {
+  const result = [];
+  const seen = new Set();
+  (Array.isArray(batches) ? batches : []).forEach((raw) => {
+    if (!raw || typeof raw !== "object") return;
+    const batchId = raw.batchId || raw.id || legacyCopilotId("batch", JSON.stringify(raw.options || []).slice(0, 500));
+    if (seen.has(batchId)) return;
+    seen.add(batchId);
+    result.push({
+      ...raw,
+      batchId,
+      createdAt: raw.createdAt || raw.updatedAt || "1970-01-01T00:00:00.000Z",
+      options: Array.isArray(raw.options) ? raw.options : []
+    });
+  });
+  return result
+    .sort((a, b) => stampToClientMs(a.createdAt) - stampToClientMs(b.createdAt))
+    .slice(-20);
+}
+
+function stampToClientMs(value) {
+  const ms = Date.parse(value || "");
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function setCopilotBusy(isBusy) {
+  copilotRequestInFlight = Boolean(isBusy);
+  copilotState.status = isBusy ? "loading" : "idle";
+  const sendButton = document.getElementById("sendCopilot");
+  const input = document.getElementById("copilotInput");
+  if (sendButton) {
+    sendButton.disabled = Boolean(isBusy);
+    sendButton.textContent = isBusy ? "Đang tìm..." : "Gửi";
+  }
+  if (input) input.dataset.loading = isBusy ? "true" : "false";
+}
+
+async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 45000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || data.message || `HTTP ${response.status}`);
+    return data;
+  } catch (error) {
+    if (error.name === "AbortError") throw new Error("Yêu cầu quá lâu, thử lại với câu ngắn hơn hoặc bấm gửi lại.");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function apiJson(pathname, options = {}, retried = false) {
@@ -506,8 +628,10 @@ function applyRemotePlannerPayload(remote) {
     state.schedule = Array.isArray(state.schedule) ? state.schedule.filter((event) => !isEventDeleted(event)) : [];
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   }
-  if (remote?.copilotState) {
+  if (remote?.copilotState && !copilotRequestInFlight) {
     Object.assign(copilotState, loadCopilotStateFromObject(remote.copilotState));
+    copilotState.status = "idle";
+    copilotState.error = "";
     localStorage.setItem(COPILOT_STORAGE_KEY, JSON.stringify(copilotStateForRemote()));
   }
   authState.lastSyncAt = remote?.updatedAt || new Date().toISOString();
@@ -599,8 +723,8 @@ function loadStateFromObject(saved = {}) {
 function loadCopilotStateFromObject(saved = {}) {
   return {
     conversationId: saved.conversationId || uid("conversation"),
-    messages: Array.isArray(saved.messages) ? saved.messages : [],
-    optionBatches: Array.isArray(saved.optionBatches) ? saved.optionBatches : [],
+    messages: normalizeCopilotMessages(saved.messages),
+    optionBatches: normalizeCopilotBatches(saved.optionBatches),
     status: "idle",
     error: "",
     activeSource: null
@@ -1619,6 +1743,14 @@ function renderCopilot() {
   }
   messages.innerHTML = timeline.join("");
   options.innerHTML = "";
+  const sendButton = document.getElementById("sendCopilot");
+  const input = document.getElementById("copilotInput");
+  const busy = copilotState.status === "loading" || copilotRequestInFlight;
+  if (sendButton) {
+    sendButton.disabled = busy;
+    sendButton.textContent = busy ? "Đang tìm..." : "Gửi";
+  }
+  if (input) input.dataset.loading = busy ? "true" : "false";
   messages.scrollTop = messages.scrollHeight;
 }
 
@@ -1770,7 +1902,7 @@ function addCopilotOption(optionId, replyText = "") {
   if (!option) return false;
   upsertScheduledItems([copilotOptionToItem(option)]);
   updateCopilotOption(optionId, { status: "confirmed" });
-  copilotState.messages.push({ role: "assistant", content: replyText || `Đã thêm "${option.title}" vào lịch.` });
+  copilotState.messages.push(makeCopilotMessage("assistant", replyText || `Đã thêm "${option.title}" vào lịch.`));
   saveCopilotState();
   saveState();
   renderAll();
@@ -1787,42 +1919,43 @@ function tryHandleCopilotConfirmation(message) {
 }
 
 async function sendCopilotMessage() {
+  if (copilotRequestInFlight) return;
   const input = document.getElementById("copilotInput");
-  const message = input?.value.trim();
+  const message = cleanCopilotText(input?.value || "");
   if (!message) return;
-  copilotState.messages.push({ role: "user", content: message });
+  copilotState.messages.push(makeCopilotMessage("user", message));
   copilotState.error = "";
-  input.value = "";
-  copilotState.status = "loading";
-  saveCopilotState();
+  if (input) input.value = "";
+  setCopilotBusy(true);
+  localStorage.setItem(COPILOT_STORAGE_KEY, JSON.stringify(copilotStateForRemote()));
   renderCopilot();
   try {
-    const response = await fetch("/api/calendar-copilot/chat", {
+    const data = await fetchJsonWithTimeout("/api/calendar-copilot/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json; charset=utf-8" },
       body: JSON.stringify({
         userId: "local-user",
         conversationId: copilotState.conversationId,
         message,
-        history: copilotState.messages.slice(-12),
+        history: normalizeCopilotMessages(copilotState.messages).slice(-12),
         weekStart: state.weekStart,
         schedule: state.schedule,
         pendingOptions: allCopilotOptions(),
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Ho_Chi_Minh"
       })
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Copilot failed");
-    if (data.confirmOptionId) addCopilotOption(data.confirmOptionId, data.reply || "");
-    else {
+    }, 45000);
+    if (data.confirmOptionId) {
+      addCopilotOption(data.confirmOptionId, data.reply || "");
+    } else {
       const batchId = data.batchId || uid("batch");
       const options = Array.isArray(data.pendingOptions) ? data.pendingOptions : [];
-      copilotState.messages.push({ role: "assistant", content: data.reply || "Mình đã tạo vài option tạm.", batchId: options.length ? batchId : "" });
+      copilotState.messages.push(makeCopilotMessage("assistant", data.reply || "Mình đã tạo vài option tạm.", { batchId: options.length ? batchId : "" }));
       if (options.length) {
         copilotState.optionBatches.push({
           batchId,
           query: message,
-          createdAt: new Date().toISOString(),
+          createdAt: syncStamp(),
+          updatedAt: syncStamp(),
           options,
           providerReports: Array.isArray(data.providerReports) ? data.providerReports : []
         });
@@ -1831,10 +1964,10 @@ async function sendCopilotMessage() {
   } catch (error) {
     copilotState.error = `Chưa gợi ý được: ${error.message}`;
   } finally {
-    copilotState.status = "idle";
+    setCopilotBusy(false);
     saveCopilotState();
+    renderCopilot();
   }
-  renderCopilot();
 }
 
 function ensureCalendarChrome() {
