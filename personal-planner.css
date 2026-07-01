@@ -200,6 +200,11 @@ h4 {
   gap: 8px;
 }
 
+.sync-form[hidden],
+.sync-user[hidden] {
+  display: none;
+}
+
 .sync-form input {
   width: 100%;
   min-height: 38px;
@@ -1618,14 +1623,8 @@ body {
 #calendar .day-body {
   position: relative;
   min-height: 0;
-  background:
-    repeating-linear-gradient(
-      to bottom,
-      transparent 0,
-      transparent calc(var(--hour-height, 126px) - 1px),
-      rgba(226, 232, 240, 0.82) calc(var(--hour-height, 126px) - 1px),
-      rgba(226, 232, 240, 0.82) var(--hour-height, 126px)
-    );
+  isolation: isolate;
+  background: #fff;
 }
 
 #calendar .time-body {
@@ -1635,7 +1634,7 @@ body {
 #calendar .calendar-grid-lines {
   position: absolute;
   inset: 0;
-  z-index: 3;
+  z-index: 0;
   pointer-events: none;
 }
 
@@ -1644,7 +1643,7 @@ body {
   left: 0;
   right: 0;
   height: 1px;
-  background: rgba(203, 213, 225, 0.95);
+  background: rgba(203, 213, 225, 0.62);
 }
 
 #calendar .time-body span {
@@ -2294,5 +2293,204 @@ body {
   .conflict-alert,
   .alternative-slot {
     grid-template-columns: 48px 1fr;
+  }
+}
+
+.login-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background:
+    radial-gradient(circle at 86% 8%, rgba(117, 98, 232, 0.12), transparent 34%),
+    radial-gradient(circle at 12% 90%, rgba(51, 133, 214, 0.1), transparent 30%),
+    #fbfbff;
+}
+
+body:not(.app-locked) .login-screen {
+  display: none;
+}
+
+body.app-locked {
+  display: block;
+  overflow: hidden;
+}
+
+body.app-locked .app-shell,
+body.app-locked .workspace,
+body.app-locked .event-modal {
+  display: none;
+}
+
+.login-card {
+  width: min(100%, 520px);
+  display: grid;
+  gap: 20px;
+  padding: 34px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: var(--shadow);
+}
+
+.login-mark {
+  width: 54px;
+  height: 54px;
+  display: grid;
+  place-items: center;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #8b73ff, #6b5eea);
+  color: #fff;
+  font-size: 28px;
+  font-weight: 900;
+  clip-path: none;
+}
+
+.login-mark::before {
+  content: "C";
+}
+
+.login-card h1 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 42px;
+  line-height: 1.05;
+}
+
+.login-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1.45;
+}
+
+.login-field {
+  display: grid;
+  gap: 10px;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.login-input-wrap {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fbfcff;
+  box-shadow: inset 0 0 0 1px rgba(117, 98, 232, 0.02);
+}
+
+.login-input-wrap:focus-within {
+  border-color: rgba(117, 98, 232, 0.55);
+  box-shadow: 0 0 0 4px rgba(117, 98, 232, 0.1);
+}
+
+.login-input-wrap span {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  background: var(--soft);
+  color: var(--accent);
+  font-size: 15px;
+}
+
+.login-input-wrap input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.login-input-wrap input::placeholder {
+  color: #a6a8b1;
+  font-weight: 600;
+}
+
+.login-input-wrap button,
+.forgot-link {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.forgot-link {
+  width: fit-content;
+  justify-self: end;
+  min-height: auto;
+  padding: 0;
+  color: var(--accent);
+  font-size: 14px;
+}
+
+.login-error {
+  padding: 12px 14px;
+  border: 1px solid #fecaca;
+  border-radius: 12px;
+  background: #fff1f2;
+  color: #b42318 !important;
+  font-size: 14px !important;
+  font-weight: 900;
+}
+
+.login-error[hidden] {
+  display: none;
+}
+
+.login-submit {
+  min-height: 58px;
+  border: 0;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #4f7cff, var(--accent));
+  color: #fff;
+  font-size: 18px;
+  box-shadow: 0 16px 34px rgba(117, 98, 232, 0.22);
+}
+
+.login-submit:hover {
+  filter: brightness(0.98);
+}
+
+.side-lock {
+  min-height: 42px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--rose);
+  text-align: left;
+}
+
+@media (max-width: 720px) {
+  .login-screen {
+    padding: 18px;
+  }
+
+  .login-card {
+    padding: 28px 22px;
+    border-radius: 22px;
+  }
+
+  .login-card h1 {
+    font-size: 42px;
+  }
+
+  .login-card p {
+    font-size: 17px;
+  }
+
+  .login-submit {
+    width: 100%;
   }
 }

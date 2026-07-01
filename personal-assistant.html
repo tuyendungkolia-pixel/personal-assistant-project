@@ -4,9 +4,34 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Trợ lý lịch cá nhân</title>
-    <link rel="stylesheet" href="personal-planner.css">
+    <link rel="stylesheet" href="personal-planner.css?v=login-gate-2">
   </head>
-  <body>
+  <body class="app-locked">
+    <section id="loginScreen" class="login-screen" aria-label="Đăng nhập">
+      <div class="login-card">
+        <div class="login-mark" aria-hidden="true"></div>
+        <h1>Đăng nhập</h1>
+        <p>Nhập tên đăng nhập và mật khẩu để truy cập workspace.</p>
+        <label class="login-field">
+          <span>Tên đăng nhập</span>
+          <div class="login-input-wrap">
+            <span aria-hidden="true">👤</span>
+            <input id="appLoginUsername" type="text" autocomplete="username" placeholder="mlinh">
+          </div>
+        </label>
+        <label class="login-field">
+          <span>Mật khẩu</span>
+          <div class="login-input-wrap">
+            <span aria-hidden="true">🔒</span>
+            <input id="appLoginPassword" type="password" autocomplete="current-password" placeholder="••••••••">
+            <button id="toggleAppPassword" type="button">HIỆN</button>
+          </div>
+        </label>
+        <button id="forgotAppPassword" class="forgot-link" type="button">Quên mật khẩu?</button>
+        <p id="appLoginError" class="login-error" hidden>Sai tên đăng nhập hoặc mật khẩu.</p>
+        <button id="appLoginSubmit" class="login-submit" type="button">Đăng nhập <span aria-hidden="true">→</span></button>
+      </div>
+    </section>
     <aside class="app-shell">
       <div>
         <p class="eyebrow">Personal planner v1</p>
@@ -18,6 +43,7 @@
         <a href="#calendar">Lịch tuần</a>
         <a href="#copilot">Gợi ý AI</a>
         <a href="#habits">Thói quen</a>
+        <button id="lockApp" class="side-lock" type="button">Khóa app</button>
       </nav>
       <section class="sync-card" id="syncCard" aria-label="Đồng bộ tài khoản">
         <p class="eyebrow">Sync</p>
@@ -252,6 +278,6 @@
       </section>
     </div>
 
-    <script src="personal-planner.js?v=supabase-sync-1"></script>
+    <script src="personal-planner.js?v=login-gate-2"></script>
   </body>
 </html>

@@ -1,4 +1,7 @@
 const STORAGE_KEY = "personalPlannerV1";
+const APP_LOGIN_STORAGE_KEY = "personalPlannerAppUnlockedV1";
+const APP_LOGIN_USERNAME = "mlinh";
+const APP_LOGIN_PASSWORD = "14771010";
 const COPILOT_STORAGE_KEY = "personalPlannerCopilotV1";
 const AUTH_STORAGE_KEY = "personalPlannerAuthV1";
 const DAY_NAMES = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "CN"];
@@ -57,6 +60,43 @@ const smartAddState = {
   pendingAddAnyway: false
 };
 const copilotState = loadCopilotState();
+
+function isAppUnlocked() {
+  try {
+    return sessionStorage.getItem(APP_LOGIN_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function renderAppLock() {
+  document.body.classList.toggle("app-locked", !isAppUnlocked());
+}
+
+function unlockApp() {
+  const username = value("appLoginUsername").trim();
+  const password = value("appLoginPassword");
+  const error = document.getElementById("appLoginError");
+  if (username === APP_LOGIN_USERNAME && password === APP_LOGIN_PASSWORD) {
+    sessionStorage.setItem(APP_LOGIN_STORAGE_KEY, "true");
+    if (error) error.hidden = true;
+    setValue("appLoginPassword", "");
+    renderAppLock();
+    return;
+  }
+  if (error) {
+    error.textContent = "Sai tên đăng nhập hoặc mật khẩu.";
+    error.hidden = false;
+  }
+}
+
+function lockApp() {
+  sessionStorage.removeItem(APP_LOGIN_STORAGE_KEY);
+  renderAppLock();
+  document.getElementById("appLoginUsername")?.focus();
+}
+
+renderAppLock();
 
 function loadState() {
   const today = new Date();
@@ -2488,6 +2528,32 @@ document.getElementById("syncPassword")?.addEventListener("keydown", (event) => 
   event.preventDefault();
   handleSyncLogin("login");
 });
+document.getElementById("appLoginSubmit")?.addEventListener("click", unlockApp);
+document.getElementById("appLoginUsername")?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  document.getElementById("appLoginPassword")?.focus();
+});
+document.getElementById("appLoginPassword")?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  unlockApp();
+});
+document.getElementById("toggleAppPassword")?.addEventListener("click", () => {
+  const input = document.getElementById("appLoginPassword");
+  const button = document.getElementById("toggleAppPassword");
+  if (!input || !button) return;
+  const nextType = input.type === "password" ? "text" : "password";
+  input.type = nextType;
+  button.textContent = nextType === "password" ? "HIỆN" : "ẨN";
+});
+document.getElementById("forgotAppPassword")?.addEventListener("click", () => {
+  const error = document.getElementById("appLoginError");
+  if (!error) return;
+  error.textContent = "Tài khoản demo: mlinh / 14771010.";
+  error.hidden = false;
+});
+document.getElementById("lockApp")?.addEventListener("click", lockApp);
 
 if (state.items.length && (!state.schedule.length || !scheduleCoversCurrentItems())) {
   planWeek();
