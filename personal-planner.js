@@ -144,6 +144,21 @@ function lockApp() {
   document.getElementById("appLoginUsername")?.focus();
 }
 
+async function ensureAppAuthSession() {
+  if (hasAuthSession() || !isAppUnlocked() || !canUseServerSync()) return;
+  try {
+    const data = await apiJson("/api/app-login", {
+      method: "POST",
+      body: { username: APP_LOGIN_USERNAME, password: APP_LOGIN_PASSWORD }
+    });
+    applyAuthResult(data);
+  } catch (error) {
+    authState.error = `Chưa lấy được phiên đồng bộ: ${error.message}`;
+    saveAuthState();
+    renderSyncUi();
+  }
+}
+
 window.unlockApp = unlockApp;
 window.lockApp = lockApp;
 
@@ -430,6 +445,7 @@ async function initSync() {
     authState.configured = Boolean(status.ok && status.configured);
     authState.error = authState.configured ? "" : `Server chưa cấu hình Supabase: ${(status.missing || []).join(", ")}`;
     renderSyncUi();
+    if (authState.configured) await ensureAppAuthSession();
     if (authState.configured && hasAuthSession()) await syncRemoteState("pull");
   } catch (error) {
     authState.configured = false;
@@ -2835,6 +2851,10 @@ window.addEventListener("focus", () => {
 window.addEventListener("online", () => {
   if (hasAuthSession() && syncReady) syncRemoteState(state._sync?.dirty ? "push" : "pull");
 });
+setInterval(() => {
+  if (document.hidden || !hasAuthSession() || !syncReady || state._sync?.dirty) return;
+  syncRemoteState("pull");
+}, 30000);
 document.getElementById("syncPassword")?.addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
   event.preventDefault();

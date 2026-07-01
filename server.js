@@ -1190,7 +1190,8 @@ function mergePlannerPayload({
     baseRevision: Number(baseRevision || localPlanner._sync?.revision || 0),
     revision: nextRevision,
     updatedAt: now,
-    updatedBy: safeClientId
+    updatedBy: safeClientId,
+    dirty: false
   };
 
   const mergedCopilot = mergeCopilotStates(remoteCopilot, localCopilot, now);
@@ -1201,7 +1202,8 @@ function mergePlannerPayload({
     clientId: safeClientId,
     revision: nextRevision,
     updatedAt: now,
-    updatedBy: safeClientId
+    updatedBy: safeClientId,
+    dirty: false
   };
 
   return {
@@ -1286,7 +1288,7 @@ function normalizeStampedValue(value, now) {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     return { ...value, updatedAt: value.updatedAt || value.deletedAt || now };
   }
-  return { value: Boolean(value), updatedAt: now };
+  return { value: Boolean(value), updatedAt: "1970-01-01T00:00:00.000Z" };
 }
 
 function stampedValueTime(value) {
