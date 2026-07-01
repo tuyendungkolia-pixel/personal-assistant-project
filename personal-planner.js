@@ -4,6 +4,8 @@ const APP_LOGIN_USERNAME = "mlinh";
 const APP_LOGIN_PASSWORD = "14771010";
 const COPILOT_STORAGE_KEY = "personalPlannerCopilotV1";
 const AUTH_STORAGE_KEY = "personalPlannerAuthV1";
+const CLIENT_ID_STORAGE_KEY = "personalPlannerClientIdV1";
+const CLIENT_ID = loadClientId();
 const DAY_NAMES = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "CN"];
 const TYPE_LABELS = {
   fixed: "Lịch cố định",
@@ -62,6 +64,18 @@ const smartAddState = {
 const copilotState = loadCopilotState();
 let appUnlockedMemory = false;
 
+function loadClientId() {
+  try {
+    const saved = localStorage.getItem(CLIENT_ID_STORAGE_KEY);
+    if (saved) return saved;
+    const next = uid("client");
+    localStorage.setItem(CLIENT_ID_STORAGE_KEY, next);
+    return next;
+  } catch {
+    return uid("client");
+  }
+}
+
 function isAppUnlocked() {
   try {
     return sessionStorage.getItem(APP_LOGIN_STORAGE_KEY) === "true" || appUnlockedMemory;
@@ -115,7 +129,7 @@ async function unlockApp() {
     setAppUnlocked(true);
     setValue("appLoginPassword", "");
     renderAppLock();
-    if (hasAuthSession()) await syncRemoteState("pull");
+    if (hasAuthSession() && authState.configured) await syncRemoteState("pull");
     return;
   }
   if (error) {
@@ -140,7 +154,8 @@ function loadState() {
   const weekStart = toInputDate(startOfWeek(today));
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
-    const items = Array.isArray(saved.items) ? saved.items.filter((item) => !isMalformedCompactNoteItem(item)) : [];
+    const deletedItems = saved.deletedItems && typeof saved.deletedItems === "object" ? saved.deletedItems : {};
+    const items = Array.isArray(saved.items) ? saved.items.filter((item) => !isMalformedCompactNoteItem(item) && !isItemDeleted(item, deletedItems)) : [];
     const removedIds = new Set((Array.isArray(saved.items) ? saved.items : [])
       .filter(isMalformedCompactNoteItem)
       .map((item) => item.id)
@@ -157,6 +172,8 @@ function loadState() {
       optimizations: Array.isArray(saved.optimizations) ? saved.optimizations : [],
       completedEvents: saved.completedEvents && typeof saved.completedEvents === "object" ? saved.completedEvents : {},
       deletedEvents: saved.deletedEvents && typeof saved.deletedEvents === "object" ? saved.deletedEvents : {},
+      deletedItems,
+      _sync: normalizeSyncMeta(saved._sync),
       settings: {
         calendarPixelsPerMinute: normalizeCalendarPixelsPerMinute(saved.settings?.calendarPixelsPerMinute)
       }
@@ -167,8 +184,18 @@ function loadState() {
     if (changed) localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
     return next;
   } catch {
-    return { weekStart, items: [], schedule: [], warnings: [], optimizations: [], completedEvents: {}, deletedEvents: {}, settings: { calendarPixelsPerMinute: CALENDAR_PIXELS_PER_MINUTE } };
+    return { weekStart, items: [], schedule: [], warnings: [], optimizations: [], completedEvents: {}, deletedEvents: {}, deletedItems: {}, _sync: normalizeSyncMeta({}), settings: { calendarPixelsPerMinute: CALENDAR_PIXELS_PER_MINUTE } };
   }
+}
+
+function normalizeSyncMeta(meta = {}) {
+  return {
+    revision: Number(meta.revision || 0),
+    updatedAt: String(meta.updatedAt || ""),
+    updatedBy: String(meta.updatedBy || ""),
+    clientId: CLIENT_ID,
+    dirty: Boolean(meta.dirty)
+  };
 }
 
 function normalizeCalendarPixelsPerMinute(value) {
@@ -204,11 +231,19 @@ function isMalformedCompactText(value) {
   return knownBadNote || sectionCount >= 2 || bulletCount >= 3;
 }
 
-function saveState() {
+function saveState(options = {}) {
   state.completedEvents = state.completedEvents || {};
   state.deletedEvents = state.deletedEvents || {};
+  state.deletedItems = state.deletedItems || {};
+  state._sync = normalizeSyncMeta(state._sync);
+  const canMarkDirty = options.markDirty !== false && (syncReady || !hasAuthSession() || !canUseServerSync());
+  if (canMarkDirty) {
+    state._sync.dirty = true;
+    state._sync.updatedAt = new Date().toISOString();
+    state._sync.updatedBy = CLIENT_ID;
+  }
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  queueRemoteSync();
+  if (options.queueSync !== false) queueRemoteSync();
 }
 
 function loadAuthState() {
@@ -273,6 +308,8 @@ function saveCopilotState() {
 }
 
 let remoteSyncTimer = null;
+let syncReady = false;
+let syncInFlight = false;
 
 function hasAuthSession() {
   return Boolean(authState.accessToken);
@@ -313,7 +350,7 @@ function formatSyncTime(value) {
 }
 
 function queueRemoteSync() {
-  if (!hasAuthSession()) return;
+  if (!hasAuthSession() || !syncReady) return;
   clearTimeout(remoteSyncTimer);
   remoteSyncTimer = setTimeout(() => syncRemoteState("push"), 900);
 }
@@ -364,8 +401,8 @@ function applyAuthResult(data) {
   authState.refreshToken = data.refreshToken || authState.refreshToken || "";
   authState.email = data.user?.email || data.user?.username || authState.email || "";
   authState.userId = data.user?.id || authState.userId || "";
-  authState.configured = true;
-  authState.error = "";
+  authState.configured = data.syncConfigured !== false;
+  authState.error = authState.configured ? "" : "Server chưa cấu hình Supabase nên chưa đồng bộ cloud.";
   saveAuthState();
   renderSyncUi();
 }
@@ -390,8 +427,8 @@ async function initSync() {
   }
   try {
     const status = await apiJson("/api/sync/status");
-    authState.configured = Boolean(status.ok);
-    authState.error = "";
+    authState.configured = Boolean(status.ok && status.configured);
+    authState.error = authState.configured ? "" : `Server chưa cấu hình Supabase: ${(status.missing || []).join(", ")}`;
     renderSyncUi();
     if (authState.configured && hasAuthSession()) await syncRemoteState("pull");
   } catch (error) {
@@ -401,7 +438,7 @@ async function initSync() {
   }
 }
 
-async function syncRemoteState(mode = "push") {
+async function legacySyncRemoteStateUnused(mode = "push") {
   if (!hasAuthSession() || !canUseServerSync()) return;
   authState.configured = true;
   authState.syncing = true;
@@ -439,16 +476,104 @@ async function syncRemoteState(mode = "push") {
   }
 }
 
+function applyRemotePlannerPayload(remote) {
+  if (remote?.plannerState) {
+    Object.keys(state).forEach((key) => delete state[key]);
+    Object.assign(state, loadStateFromObject(remote.plannerState));
+    state._sync = normalizeSyncMeta({
+      ...(state._sync || {}),
+      revision: remote.revision || remote.plannerState?._sync?.revision || state._sync?.revision || 0,
+      updatedAt: remote.updatedAt || remote.plannerState?._sync?.updatedAt || state._sync?.updatedAt || "",
+      updatedBy: remote.plannerState?._sync?.updatedBy || "",
+      dirty: false
+    });
+    state.schedule = Array.isArray(state.schedule) ? state.schedule.filter((event) => !isEventDeleted(event)) : [];
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }
+  if (remote?.copilotState) {
+    Object.assign(copilotState, loadCopilotStateFromObject(remote.copilotState));
+    localStorage.setItem(COPILOT_STORAGE_KEY, JSON.stringify(copilotStateForRemote()));
+  }
+  authState.lastSyncAt = remote?.updatedAt || new Date().toISOString();
+  saveAuthState();
+}
+
+async function syncRemoteState(mode = "push", options = {}) {
+  if (!hasAuthSession() || !canUseServerSync() || !authState.configured) return;
+  if (syncInFlight && !options.force) return;
+  syncInFlight = true;
+  authState.configured = true;
+  authState.syncing = true;
+  authState.error = "";
+  renderSyncUi();
+  try {
+    if (mode === "pull") {
+      const remote = await apiJson("/api/planner-state");
+      if (remote.found && remote.plannerState) {
+        const localRevision = Number(state._sync?.revision || 0);
+        const remoteRevision = Number(remote.revision || remote.plannerState?._sync?.revision || 0);
+        if (state._sync?.dirty) {
+          syncInFlight = false;
+          await syncRemoteState("push", { force: true });
+          return;
+        }
+        if (remoteRevision >= localRevision || options.force) applyRemotePlannerPayload(remote);
+        renderAll();
+      } else {
+        syncReady = true;
+        syncInFlight = false;
+        await syncRemoteState("push", { force: true });
+        return;
+      }
+    } else {
+      const saved = await apiJson("/api/planner-state", {
+        method: "PUT",
+        body: {
+          plannerState: state,
+          copilotState: copilotStateForRemote(),
+          baseRevision: Number(state._sync?.revision || 0),
+          clientId: CLIENT_ID
+        }
+      });
+      if (saved.plannerState) {
+        applyRemotePlannerPayload(saved);
+        renderAll();
+      } else {
+        state._sync = normalizeSyncMeta({
+          ...(state._sync || {}),
+          revision: saved.revision || state._sync?.revision || 0,
+          updatedAt: saved.updatedAt || new Date().toISOString(),
+          updatedBy: CLIENT_ID,
+          dirty: false
+        });
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        authState.lastSyncAt = saved.updatedAt || new Date().toISOString();
+        saveAuthState();
+      }
+    }
+  } catch (error) {
+    authState.error = `Đồng bộ lỗi: ${error.message}`;
+  } finally {
+    syncReady = true;
+    syncInFlight = false;
+    authState.syncing = false;
+    renderSyncUi();
+  }
+}
+
 function loadStateFromObject(saved = {}) {
   const currentWeekStart = toInputDate(startOfWeek(new Date()));
+  const deletedItems = saved.deletedItems && typeof saved.deletedItems === "object" ? saved.deletedItems : {};
   return {
     weekStart: saved.weekStart || currentWeekStart,
-    items: Array.isArray(saved.items) ? saved.items : [],
+    items: Array.isArray(saved.items) ? saved.items.filter((item) => !isItemDeleted(item, deletedItems)) : [],
     schedule: Array.isArray(saved.schedule) ? saved.schedule : [],
     warnings: Array.isArray(saved.warnings) ? saved.warnings : [],
     optimizations: Array.isArray(saved.optimizations) ? saved.optimizations : [],
     completedEvents: saved.completedEvents && typeof saved.completedEvents === "object" ? saved.completedEvents : {},
     deletedEvents: saved.deletedEvents && typeof saved.deletedEvents === "object" ? saved.deletedEvents : {},
+    deletedItems,
+    _sync: normalizeSyncMeta(saved._sync),
     settings: {
       calendarPixelsPerMinute: normalizeCalendarPixelsPerMinute(saved.settings?.calendarPixelsPerMinute)
     }
@@ -551,6 +676,18 @@ function uid(prefix = "id") {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function syncStamp() {
+  return new Date().toISOString();
+}
+
+function touchEntity(entity, stamp = syncStamp()) {
+  if (!entity || typeof entity !== "object") return entity;
+  entity.updatedAt = stamp;
+  entity.updatedBy = CLIENT_ID;
+  if (!entity.createdAt) entity.createdAt = stamp;
+  return entity;
+}
+
 function value(id) {
   return document.getElementById(id)?.value || "";
 }
@@ -648,8 +785,10 @@ function addParsedItems(items) {
     const existing = state.items.find((candidate) => itemDuplicateKey(candidate) === key);
     if (existing) {
       Object.assign(existing, { ...item, id: existing.id });
+      touchEntity(existing);
       updated += 1;
     } else {
+      touchEntity(item);
       state.items.push(item);
       added += 1;
     }
@@ -668,8 +807,10 @@ function upsertScheduledItems(items) {
     const finalItem = existingItem || item;
     if (existingItem) {
       Object.assign(existingItem, { ...item, id: existingItem.id });
+      touchEntity(existingItem);
       updated += 1;
     } else {
+      touchEntity(item);
       state.items.push(item);
       added += 1;
     }
@@ -687,6 +828,7 @@ function upsertScheduledItems(items) {
     });
     nextEvent.completed = existingEvent ? isEventCompleted(existingEvent) : false;
     rememberEventDeleted(nextEvent, false);
+    touchEntity(nextEvent);
     if (existingEvent) Object.assign(existingEvent, nextEvent);
     else state.schedule.push(nextEvent);
   });
@@ -697,6 +839,7 @@ function upsertScheduledItems(items) {
 
 function syncItemFromEvent(event) {
   if (!event?.sourceId) return;
+  touchEntity(event);
   const item = state.items.find((candidate) => candidate.id === event.sourceId);
   if (!item) return;
   const relatedEvents = state.schedule.filter((candidate) => candidate.sourceId === event.sourceId);
@@ -712,6 +855,7 @@ function syncItemFromEvent(event) {
       frequency: 1,
       notes: event.notes || item.notes || "Manual calendar override."
     });
+    touchEntity(manualItem, event.updatedAt || syncStamp());
     state.items.push(manualItem);
     event.sourceId = manualItem.id;
     state.items = dedupeItems(state.items);
@@ -726,6 +870,7 @@ function syncItemFromEvent(event) {
     duration: event.duration || minutesBetween(event.start, event.end),
     notes: event.notes || item.notes
   });
+  touchEntity(item, event.updatedAt || syncStamp());
 }
 
 function removeItemForDeletedEvent(event) {
@@ -735,6 +880,7 @@ function removeItemForDeletedEvent(event) {
   const item = state.items.find((candidate) => candidate.id === event.sourceId);
   if (!item) return;
   if (isPinnedScheduleItem(item) || item.date) {
+    rememberItemDeleted(item, true);
     state.items = state.items.filter((candidate) => candidate.id !== item.id);
   }
 }
@@ -744,6 +890,8 @@ function normalizeItem(raw) {
   if (type === "fixed" && !raw.date) type = "task";
   const start = raw.start || "09:00";
   const end = raw.end || timeFromMinutes(minutesFromTime(start) + Number(raw.duration || 90));
+  const isExisting = Boolean(raw.id);
+  const stamp = isExisting ? (raw.updatedAt || raw.createdAt || "") : syncStamp();
   return {
     id: raw.id || uid("item"),
     title: String(raw.title || "").trim(),
@@ -754,7 +902,10 @@ function normalizeItem(raw) {
     duration: Math.max(15, Number(raw.duration || minutesBetween(start, end) || 90)),
     priority: raw.priority || "medium",
     frequency: Math.max(1, Number(raw.frequency || 1)),
-    notes: String(raw.notes || "").trim()
+    notes: String(raw.notes || "").trim(),
+    createdAt: raw.createdAt || stamp,
+    updatedAt: raw.updatedAt || stamp,
+    updatedBy: raw.updatedBy || ""
   };
 }
 
@@ -766,12 +917,15 @@ function addItem(raw) {
 }
 
 function removeItem(id) {
+  rememberItemDeleted(id, true);
   state.items = state.items.filter((item) => item.id !== id);
   state.schedule = state.schedule.filter((event) => event.sourceId !== id);
   autoPlanAndRender();
 }
 
 function buildEvent(item, date, start, duration, extra = {}) {
+  const isExisting = Boolean(extra.id);
+  const stamp = extra.updatedAt || item.updatedAt || (isExisting ? "" : syncStamp());
   return {
     id: extra.id || uid("event"),
     sourceId: item.id,
@@ -782,6 +936,9 @@ function buildEvent(item, date, start, duration, extra = {}) {
     end: timeFromMinutes(minutesFromTime(start) + duration),
     duration,
     notes: extra.notes || item.notes || "",
+    createdAt: extra.createdAt || item.createdAt || stamp,
+    updatedAt: stamp,
+    updatedBy: extra.updatedBy || item.updatedBy || "",
     completed: Boolean(extra.completed || item.completed)
   };
 }
@@ -998,28 +1155,55 @@ function eventCompletionKeys(event) {
 
 function isEventCompleted(event) {
   const completed = state.completedEvents || {};
-  return eventCompletionKeys(event).some((key) => completed[key]) || Boolean(event.completed);
+  let sawSyncedRecord = false;
+  const syncedValue = eventCompletionKeys(event).some((key) => {
+    const record = completed[key];
+    if (record && typeof record === "object") {
+      sawSyncedRecord = true;
+      return Boolean(record.completed ?? record.value);
+    }
+    if (record === true || record === false) sawSyncedRecord = true;
+    return record === true;
+  });
+  return sawSyncedRecord ? syncedValue : Boolean(event.completed);
 }
 
 function rememberEventCompleted(event, completed) {
   state.completedEvents = state.completedEvents || {};
+  const stamp = syncStamp();
   eventCompletionKeys(event).forEach((key) => {
-    if (completed) state.completedEvents[key] = true;
-    else delete state.completedEvents[key];
+    state.completedEvents[key] = { completed: Boolean(completed), value: Boolean(completed), updatedAt: stamp, clientId: CLIENT_ID };
   });
 }
 
 function isEventDeleted(event) {
   const deleted = state.deletedEvents || {};
-  return eventCompletionKeys(event).some((key) => deleted[key]);
+  return eventCompletionKeys(event).some((key) => {
+    const record = deleted[key];
+    if (record && typeof record === "object") return Boolean(record.deleted ?? record.value);
+    return record === true;
+  });
 }
 
 function rememberEventDeleted(event, deleted) {
   state.deletedEvents = state.deletedEvents || {};
+  const stamp = syncStamp();
   eventCompletionKeys(event).forEach((key) => {
-    if (deleted) state.deletedEvents[key] = true;
-    else delete state.deletedEvents[key];
+    state.deletedEvents[key] = { deleted: Boolean(deleted), value: Boolean(deleted), updatedAt: stamp, clientId: CLIENT_ID };
   });
+}
+
+function isItemDeleted(item, deletedItems = state.deletedItems || {}) {
+  const record = deletedItems[item?.id];
+  if (record && typeof record === "object") return Boolean(record.deleted ?? record.value);
+  return record === true;
+}
+
+function rememberItemDeleted(itemOrId, deleted) {
+  const id = typeof itemOrId === "string" ? itemOrId : itemOrId?.id;
+  if (!id) return;
+  state.deletedItems = state.deletedItems || {};
+  state.deletedItems[id] = { deleted: Boolean(deleted), value: Boolean(deleted), updatedAt: syncStamp(), clientId: CLIENT_ID };
 }
 
 function scheduleCoversCurrentItems() {
@@ -2425,7 +2609,12 @@ function saveEventModal() {
   event.duration = minutesBetween(event.start, event.end);
   event.notes = value("modalEventNotes");
   event.completed = document.getElementById("modalEventCompleted").checked;
-  if (wasCompleted) previousCompletionKeys.forEach((key) => delete state.completedEvents[key]);
+  if (wasCompleted) {
+    const stamp = syncStamp();
+    previousCompletionKeys.forEach((key) => {
+      state.completedEvents[key] = { completed: false, value: false, updatedAt: stamp, clientId: CLIENT_ID };
+    });
+  }
   rememberEventCompleted(event, event.completed);
   rememberEventDeleted(event, false);
   syncItemFromEvent(event);
@@ -2472,12 +2661,22 @@ function clearPlannerScope(scope) {
       .map((event) => event.sourceId)
       .filter(Boolean)
   );
+  state.schedule
+    .filter((event) => dateSet.has(event.date))
+    .forEach((event) => {
+      rememberEventCompleted(event, false);
+      rememberEventDeleted(event, true);
+    });
 
   state.items = state.items.filter((item) => {
     const itemDate = item.date || "";
-    if (sourceIds.has(item.id)) return false;
-    if (itemDate && dateSet.has(itemDate)) return false;
-    if (scope === "week" && !itemDate && itemRelevantToWeek(item)) return false;
+    const shouldDelete = sourceIds.has(item.id)
+      || (itemDate && dateSet.has(itemDate))
+      || (scope === "week" && !itemDate && itemRelevantToWeek(item));
+    if (shouldDelete) {
+      rememberItemDeleted(item, true);
+      return false;
+    }
     return true;
   });
   state.schedule = state.schedule.filter((event) => !dateSet.has(event.date));
@@ -2502,7 +2701,9 @@ function escapeAttr(value) {
 
 document.getElementById("weekStart").addEventListener("change", (event) => {
   state.weekStart = event.target.value || state.weekStart;
-  autoPlanAndRender();
+  saveState({ markDirty: false, queueSync: false });
+  renderAll();
+  if (hasAuthSession() && syncReady) syncRemoteState("pull");
 });
 document.getElementById("scheduleGrid").addEventListener("change", (event) => {
   if (event.target.matches("[data-event-completed]")) {
@@ -2626,8 +2827,14 @@ document.getElementById("sourceModal").addEventListener("click", (event) => {
 });
 document.getElementById("syncLogin")?.addEventListener("click", () => handleSyncLogin("login"));
 document.getElementById("syncSignup")?.addEventListener("click", () => handleSyncLogin("signup"));
-document.getElementById("syncNow")?.addEventListener("click", () => syncRemoteState("push"));
+document.getElementById("syncNow")?.addEventListener("click", () => syncRemoteState(state._sync?.dirty ? "push" : "pull", { force: true }));
 document.getElementById("syncLogout")?.addEventListener("click", () => clearAuthSession("Đã đăng xuất. Dữ liệu vẫn còn trên thiết bị này."));
+window.addEventListener("focus", () => {
+  if (hasAuthSession() && syncReady) syncRemoteState("pull");
+});
+window.addEventListener("online", () => {
+  if (hasAuthSession() && syncReady) syncRemoteState(state._sync?.dirty ? "push" : "pull");
+});
 document.getElementById("syncPassword")?.addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
   event.preventDefault();
@@ -2660,9 +2867,11 @@ document.getElementById("forgotAppPassword")?.addEventListener("click", () => {
 });
 document.getElementById("lockApp")?.addEventListener("click", lockApp);
 
-if (state.items.length && (!state.schedule.length || !scheduleCoversCurrentItems())) {
-  planWeek();
-} else {
-  renderAll();
-}
-initSync();
+renderAll();
+initSync().then(() => {
+  if ((!hasAuthSession() || !canUseServerSync() || !authState.configured)
+    && state.items.length
+    && (!state.schedule.length || !scheduleCoversCurrentItems())) {
+    planWeek();
+  }
+});

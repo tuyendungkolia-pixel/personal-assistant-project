@@ -85,7 +85,7 @@ const server = http.createServer(async (req, res) => {
     const configured = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY && process.env.SUPABASE_SERVICE_ROLE_KEY);
     sendJson(res, 200, {
       ok: true,
-      configured: true,
+      configured,
       supabaseConfigured: configured,
       appAuth: true,
       missing: configured ? [] : ["SUPABASE_URL", "SUPABASE_ANON_KEY", "SUPABASE_SERVICE_ROLE_KEY"].filter((key) => !process.env[key])
@@ -850,6 +850,7 @@ function appLogin(body = {}) {
     accessToken: createAppToken(config.username),
     refreshToken: "",
     user,
+    syncConfigured: hasSupabaseConfig(),
     message: "Đăng nhập thành công."
   };
 }
@@ -986,6 +987,7 @@ async function loadRemotePlannerState(user) {
     found: Boolean(row),
     plannerState: row?.planner_state || null,
     copilotState: row?.copilot_state || null,
+    revision: Number(row?.planner_state?._sync?.revision || 0),
     updatedAt: row?.updated_at || ""
   };
 }
@@ -993,12 +995,22 @@ async function loadRemotePlannerState(user) {
 async function saveRemotePlannerState(user, body = {}) {
   if (user.provider === "app") return saveAppPlannerState(user, body);
   const { url, serviceRoleKey } = supabaseConfig();
+  const existing = await loadRemotePlannerState(user).catch(() => ({ found: false, plannerState: null, copilotState: null }));
+  const merged = mergePlannerPayload({
+    existingPlannerState: existing.plannerState,
+    existingCopilotState: existing.copilotState,
+    incomingPlannerState: body.plannerState,
+    incomingCopilotState: body.copilotState,
+    baseRevision: body.baseRevision,
+    clientId: body.clientId,
+    userKey: user.id
+  });
   const endpoint = `${url}/rest/v1/planner_states?on_conflict=user_id`;
   const payload = {
     user_id: user.id,
-    planner_state: sanitizeRemoteState(body.plannerState),
-    copilot_state: sanitizeRemoteState(body.copilotState),
-    updated_at: new Date().toISOString()
+    planner_state: merged.plannerState,
+    copilot_state: merged.copilotState,
+    updated_at: merged.updatedAt
   };
   const rows = await supabaseDbFetch(endpoint, {
     method: "POST",
@@ -1010,28 +1022,23 @@ async function saveRemotePlannerState(user, body = {}) {
   return {
     ok: true,
     user,
+    plannerState: row?.planner_state || payload.planner_state,
+    copilotState: row?.copilot_state || payload.copilot_state,
+    revision: merged.revision,
     updatedAt: row?.updated_at || payload.updated_at
   };
 }
 
 async function loadAppPlannerState(user) {
   if (hasSupabaseConfig()) {
-    try {
-      return await loadAppPlannerStateFromSupabase(user);
-    } catch (error) {
-      console.warn(`Supabase app state load failed, using file fallback: ${error.message}`);
-    }
+    return loadAppPlannerStateFromSupabase(user);
   }
   return loadAppPlannerStateFromFile(user);
 }
 
 async function saveAppPlannerState(user, body = {}) {
   if (hasSupabaseConfig()) {
-    try {
-      return await saveAppPlannerStateToSupabase(user, body);
-    } catch (error) {
-      console.warn(`Supabase app state save failed, using file fallback: ${error.message}`);
-    }
+    return saveAppPlannerStateToSupabase(user, body);
   }
   return saveAppPlannerStateToFile(user, body);
 }
@@ -1047,6 +1054,7 @@ async function loadAppPlannerStateFromSupabase(user) {
     found: Boolean(row),
     plannerState: row?.planner_state || null,
     copilotState: row?.copilot_state || null,
+    revision: Number(row?.planner_state?._sync?.revision || 0),
     updatedAt: row?.updated_at || "",
     storage: "supabase"
   };
@@ -1054,12 +1062,22 @@ async function loadAppPlannerStateFromSupabase(user) {
 
 async function saveAppPlannerStateToSupabase(user, body = {}) {
   const { url, serviceRoleKey } = supabaseConfig();
+  const existing = await loadAppPlannerStateFromSupabase(user).catch(() => ({ found: false, plannerState: null, copilotState: null }));
+  const merged = mergePlannerPayload({
+    existingPlannerState: existing.plannerState,
+    existingCopilotState: existing.copilotState,
+    incomingPlannerState: body.plannerState,
+    incomingCopilotState: body.copilotState,
+    baseRevision: body.baseRevision,
+    clientId: body.clientId,
+    userKey: user.appUser
+  });
   const endpoint = `${url}/rest/v1/app_planner_states?on_conflict=app_user`;
   const payload = {
     app_user: user.appUser,
-    planner_state: sanitizeRemoteState(body.plannerState),
-    copilot_state: sanitizeRemoteState(body.copilotState),
-    updated_at: new Date().toISOString()
+    planner_state: merged.plannerState,
+    copilot_state: merged.copilotState,
+    updated_at: merged.updatedAt
   };
   const rows = await supabaseDbFetch(endpoint, {
     method: "POST",
@@ -1071,6 +1089,9 @@ async function saveAppPlannerStateToSupabase(user, body = {}) {
   return {
     ok: true,
     user,
+    plannerState: row?.planner_state || payload.planner_state,
+    copilotState: row?.copilot_state || payload.copilot_state,
+    revision: merged.revision,
     updatedAt: row?.updated_at || payload.updated_at,
     storage: "supabase"
   };
@@ -1101,6 +1122,7 @@ function loadAppPlannerStateFromFile(user) {
     found: Boolean(row),
     plannerState: row?.plannerState || null,
     copilotState: row?.copilotState || null,
+    revision: Number(row?.plannerState?._sync?.revision || 0),
     updatedAt: row?.updatedAt || "",
     storage: "file"
   };
@@ -1108,19 +1130,222 @@ function loadAppPlannerStateFromFile(user) {
 
 function saveAppPlannerStateToFile(user, body = {}) {
   const store = readPlannerFileStore();
-  const updatedAt = new Date().toISOString();
+  const existing = store[user.appUser] || {};
+  const merged = mergePlannerPayload({
+    existingPlannerState: existing.plannerState,
+    existingCopilotState: existing.copilotState,
+    incomingPlannerState: body.plannerState,
+    incomingCopilotState: body.copilotState,
+    baseRevision: body.baseRevision,
+    clientId: body.clientId,
+    userKey: user.appUser
+  });
   store[user.appUser] = {
-    plannerState: sanitizeRemoteState(body.plannerState),
-    copilotState: sanitizeRemoteState(body.copilotState),
-    updatedAt
+    plannerState: merged.plannerState,
+    copilotState: merged.copilotState,
+    updatedAt: merged.updatedAt
   };
   writePlannerFileStore(store);
-  return { ok: true, user, updatedAt, storage: "file" };
+  return {
+    ok: true,
+    user,
+    plannerState: merged.plannerState,
+    copilotState: merged.copilotState,
+    revision: merged.revision,
+    updatedAt: merged.updatedAt,
+    storage: "file"
+  };
 }
 
 function sanitizeRemoteState(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return value;
+}
+
+function mergePlannerPayload({
+  existingPlannerState,
+  existingCopilotState,
+  incomingPlannerState,
+  incomingCopilotState,
+  baseRevision,
+  clientId,
+  userKey
+} = {}) {
+  const now = new Date().toISOString();
+  const remotePlanner = sanitizeRemoteState(existingPlannerState);
+  const localPlanner = sanitizeRemoteState(incomingPlannerState);
+  const remoteCopilot = sanitizeRemoteState(existingCopilotState);
+  const localCopilot = sanitizeRemoteState(incomingCopilotState);
+  const remoteRevision = Number(remotePlanner._sync?.revision || 0);
+  const localRevision = Number(localPlanner._sync?.revision || baseRevision || 0);
+  const nextRevision = Math.max(remoteRevision, localRevision) + 1;
+  const safeClientId = String(clientId || localPlanner._sync?.clientId || "unknown-client").slice(0, 120);
+
+  const mergedPlanner = mergePlannerStates(remotePlanner, localPlanner, now);
+  mergedPlanner._sync = {
+    ...(remotePlanner._sync || {}),
+    ...(localPlanner._sync || {}),
+    userKey,
+    clientId: safeClientId,
+    baseRevision: Number(baseRevision || localPlanner._sync?.revision || 0),
+    revision: nextRevision,
+    updatedAt: now,
+    updatedBy: safeClientId
+  };
+
+  const mergedCopilot = mergeCopilotStates(remoteCopilot, localCopilot, now);
+  mergedCopilot._sync = {
+    ...(remoteCopilot._sync || {}),
+    ...(localCopilot._sync || {}),
+    userKey,
+    clientId: safeClientId,
+    revision: nextRevision,
+    updatedAt: now,
+    updatedBy: safeClientId
+  };
+
+  return {
+    plannerState: mergedPlanner,
+    copilotState: mergedCopilot,
+    revision: nextRevision,
+    updatedAt: now
+  };
+}
+
+function mergePlannerStates(remoteState = {}, localState = {}, now = new Date().toISOString()) {
+  const deletedItems = mergeStampedObject(remoteState.deletedItems, localState.deletedItems, now);
+  const deletedEvents = mergeStampedObject(remoteState.deletedEvents, localState.deletedEvents, now);
+  const items = mergeEntityArray(remoteState.items, localState.items, now, itemMergeKey)
+    .filter((item) => !isStampedDeleted(deletedItems[item.id]));
+  const schedule = mergeEntityArray(remoteState.schedule, localState.schedule, now, eventMergeKey)
+    .filter((event) => !eventServerKeys(event).some((key) => isStampedDeleted(deletedEvents[key])));
+  return {
+    ...remoteState,
+    ...localState,
+    items,
+    schedule,
+    completedEvents: mergeStampedObject(remoteState.completedEvents, localState.completedEvents, now),
+    deletedEvents,
+    deletedItems,
+    warnings: Array.isArray(localState.warnings) ? localState.warnings : Array.isArray(remoteState.warnings) ? remoteState.warnings : [],
+    optimizations: Array.isArray(localState.optimizations) ? localState.optimizations : Array.isArray(remoteState.optimizations) ? remoteState.optimizations : [],
+    settings: {
+      ...(remoteState.settings || {}),
+      ...(localState.settings || {})
+    }
+  };
+}
+
+function mergeCopilotStates(remoteState = {}, localState = {}, now = new Date().toISOString()) {
+  return {
+    ...remoteState,
+    ...localState,
+    messages: mergeEntityArray(remoteState.messages, localState.messages, now, (message) =>
+      message.id || `${message.role || ""}|${message.content || ""}|${message.createdAt || ""}`),
+    optionBatches: mergeEntityArray(remoteState.optionBatches, localState.optionBatches, now, (batch) =>
+      batch.batchId || batch.id || `${batch.createdAt || ""}|${JSON.stringify(batch.options || []).slice(0, 120)}`)
+  };
+}
+
+function mergeEntityArray(remoteItems, localItems, now, keyFn) {
+  const merged = new Map();
+  [...(Array.isArray(remoteItems) ? remoteItems : []), ...(Array.isArray(localItems) ? localItems : [])].forEach((raw, index) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+    const item = {
+      ...raw,
+      updatedAt: raw.updatedAt || raw.createdAt || "1970-01-01T00:00:00.000Z"
+    };
+    const key = keyFn(item) || item.id || `idx-${index}`;
+    const current = merged.get(key);
+    if (!current || stampToMs(item.deletedAt || item.updatedAt) >= stampToMs(current.deletedAt || current.updatedAt)) {
+      merged.set(key, item);
+    }
+  });
+  return [...merged.values()]
+    .filter((item) => !item.deletedAt)
+    .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")) || String(a.start || "").localeCompare(String(b.start || "")));
+}
+
+function mergeStampedObject(remoteObject, localObject, now) {
+  const result = {};
+  const keys = new Set([
+    ...Object.keys(remoteObject && typeof remoteObject === "object" && !Array.isArray(remoteObject) ? remoteObject : {}),
+    ...Object.keys(localObject && typeof localObject === "object" && !Array.isArray(localObject) ? localObject : {})
+  ]);
+  keys.forEach((key) => {
+    const remoteValue = remoteObject?.[key];
+    const localValue = localObject?.[key];
+    const remoteStamp = stampToMs(stampedValueTime(remoteValue));
+    const localStamp = stampToMs(stampedValueTime(localValue));
+    result[key] = localStamp >= remoteStamp ? normalizeStampedValue(localValue, now) : normalizeStampedValue(remoteValue, now);
+  });
+  return result;
+}
+
+function normalizeStampedValue(value, now) {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return { ...value, updatedAt: value.updatedAt || value.deletedAt || now };
+  }
+  return { value: Boolean(value), updatedAt: now };
+}
+
+function stampedValueTime(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value.updatedAt || value.deletedAt || value.createdAt || "";
+  return value ? "1970-01-01T00:00:00.000Z" : "";
+}
+
+function isStampedDeleted(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return Boolean(value.deleted ?? value.value);
+  return value === true;
+}
+
+function stampToMs(value) {
+  const ms = Date.parse(value || "");
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function itemMergeKey(item) {
+  return item.id || [
+    comparableServerText(item.title),
+    item.date || "",
+    item.start || "",
+    item.end || ""
+  ].join("|");
+}
+
+function eventMergeKey(event) {
+  return event.id || [
+    event.sourceId || "",
+    comparableServerText(event.title),
+    event.date || "",
+    event.start || "",
+    event.end || ""
+  ].join("|");
+}
+
+function eventServerKeys(event = {}) {
+  const title = comparableServerText(String(event.title || "").replace(/\s*\(\d+(?:\/\d+)?\)\s*$/g, ""));
+  const date = event.date || "";
+  const start = event.start || "";
+  const end = event.end || "";
+  const sourceId = event.sourceId || "";
+  const type = event.type || "";
+  const signature = [sourceId, event.title || "", type, date, start].join("|");
+  return [
+    signature,
+    [sourceId, date, start, end].join("|"),
+    [title, date, start, end].join("|"),
+    [title, type, date, start].join("|")
+  ].filter((key, index, keys) => key.replace(/\|/g, "") && keys.indexOf(key) === index);
+}
+
+function comparableServerText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 async function supabaseDbFetch(endpoint, options = {}) {
