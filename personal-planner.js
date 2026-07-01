@@ -156,6 +156,7 @@ function loadState() {
       warnings,
       optimizations: Array.isArray(saved.optimizations) ? saved.optimizations : [],
       completedEvents: saved.completedEvents && typeof saved.completedEvents === "object" ? saved.completedEvents : {},
+      deletedEvents: saved.deletedEvents && typeof saved.deletedEvents === "object" ? saved.deletedEvents : {},
       settings: {
         calendarPixelsPerMinute: normalizeCalendarPixelsPerMinute(saved.settings?.calendarPixelsPerMinute)
       }
@@ -166,7 +167,7 @@ function loadState() {
     if (changed) localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
     return next;
   } catch {
-    return { weekStart, items: [], schedule: [], warnings: [], optimizations: [], completedEvents: {}, settings: { calendarPixelsPerMinute: CALENDAR_PIXELS_PER_MINUTE } };
+    return { weekStart, items: [], schedule: [], warnings: [], optimizations: [], completedEvents: {}, deletedEvents: {}, settings: { calendarPixelsPerMinute: CALENDAR_PIXELS_PER_MINUTE } };
   }
 }
 
@@ -205,6 +206,7 @@ function isMalformedCompactText(value) {
 
 function saveState() {
   state.completedEvents = state.completedEvents || {};
+  state.deletedEvents = state.deletedEvents || {};
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   queueRemoteSync();
 }
@@ -446,6 +448,7 @@ function loadStateFromObject(saved = {}) {
     warnings: Array.isArray(saved.warnings) ? saved.warnings : [],
     optimizations: Array.isArray(saved.optimizations) ? saved.optimizations : [],
     completedEvents: saved.completedEvents && typeof saved.completedEvents === "object" ? saved.completedEvents : {},
+    deletedEvents: saved.deletedEvents && typeof saved.deletedEvents === "object" ? saved.deletedEvents : {},
     settings: {
       calendarPixelsPerMinute: normalizeCalendarPixelsPerMinute(saved.settings?.calendarPixelsPerMinute)
     }
@@ -653,6 +656,87 @@ function addParsedItems(items) {
   });
   state.items = dedupeItems(state.items);
   return { added, updated };
+}
+
+function upsertScheduledItems(items) {
+  const normalized = items.map(normalizeItem).filter((item) => item.title && item.date && item.start && item.end);
+  let added = 0;
+  let updated = 0;
+  normalized.forEach((item) => {
+    const key = itemDuplicateKey(item);
+    const existingItem = state.items.find((candidate) => itemDuplicateKey(candidate) === key);
+    const finalItem = existingItem || item;
+    if (existingItem) {
+      Object.assign(existingItem, { ...item, id: existingItem.id });
+      updated += 1;
+    } else {
+      state.items.push(item);
+      added += 1;
+    }
+
+    const existingEvent = state.schedule.find((event) => event.sourceId === finalItem.id)
+      || state.schedule.find((event) => eventDuplicateKey(event) === eventDuplicateKey({
+        title: finalItem.title,
+        date: finalItem.date,
+        start: finalItem.start,
+        end: finalItem.end
+      }));
+    const nextEvent = buildEvent(finalItem, parseDate(finalItem.date) || new Date(), finalItem.start, minutesBetween(finalItem.start, finalItem.end), {
+      id: existingEvent?.id,
+      notes: finalItem.notes
+    });
+    nextEvent.completed = existingEvent ? isEventCompleted(existingEvent) : false;
+    rememberEventDeleted(nextEvent, false);
+    if (existingEvent) Object.assign(existingEvent, nextEvent);
+    else state.schedule.push(nextEvent);
+  });
+  state.items = dedupeItems(state.items);
+  state.schedule = sortEvents(dedupeScheduleEvents(state.schedule.filter((event) => !isAutoRestEvent(event))));
+  return { added, updated };
+}
+
+function syncItemFromEvent(event) {
+  if (!event?.sourceId) return;
+  const item = state.items.find((candidate) => candidate.id === event.sourceId);
+  if (!item) return;
+  const relatedEvents = state.schedule.filter((candidate) => candidate.sourceId === event.sourceId);
+  if (relatedEvents.length > 1) {
+    const manualItem = normalizeItem({
+      title: event.title,
+      type: event.type || item.type,
+      date: event.date,
+      start: event.start,
+      end: event.end,
+      duration: event.duration || minutesBetween(event.start, event.end),
+      priority: item.priority || "medium",
+      frequency: 1,
+      notes: event.notes || item.notes || "Manual calendar override."
+    });
+    state.items.push(manualItem);
+    event.sourceId = manualItem.id;
+    state.items = dedupeItems(state.items);
+    return;
+  }
+  Object.assign(item, {
+    title: event.title,
+    type: event.type || item.type,
+    date: event.date,
+    start: event.start,
+    end: event.end,
+    duration: event.duration || minutesBetween(event.start, event.end),
+    notes: event.notes || item.notes
+  });
+}
+
+function removeItemForDeletedEvent(event) {
+  if (!event?.sourceId) return;
+  const relatedEvents = state.schedule.filter((candidate) => candidate.sourceId === event.sourceId);
+  if (relatedEvents.length > 1) return;
+  const item = state.items.find((candidate) => candidate.id === event.sourceId);
+  if (!item) return;
+  if (isPinnedScheduleItem(item) || item.date) {
+    state.items = state.items.filter((candidate) => candidate.id !== item.id);
+  }
 }
 
 function normalizeItem(raw) {
@@ -879,7 +963,7 @@ function planWeek() {
     if (heavyMinutes > 390) warnings.push(`${formatDate(date)} có hơn 6.5 giờ việc nặng. Nên giảm hoặc chuyển bớt.`);
   });
 
-  state.schedule = sortEvents(events).map((event) => ({
+  state.schedule = sortEvents(events).filter((event) => !isEventDeleted(event)).map((event) => ({
     ...event,
     completed: isEventCompleted(event)
   }));
@@ -922,6 +1006,19 @@ function rememberEventCompleted(event, completed) {
   eventCompletionKeys(event).forEach((key) => {
     if (completed) state.completedEvents[key] = true;
     else delete state.completedEvents[key];
+  });
+}
+
+function isEventDeleted(event) {
+  const deleted = state.deletedEvents || {};
+  return eventCompletionKeys(event).some((key) => deleted[key]);
+}
+
+function rememberEventDeleted(event, deleted) {
+  state.deletedEvents = state.deletedEvents || {};
+  eventCompletionKeys(event).forEach((key) => {
+    if (deleted) state.deletedEvents[key] = true;
+    else delete state.deletedEvents[key];
   });
 }
 
@@ -1471,11 +1568,12 @@ function copilotOptionToItem(option) {
 function addCopilotOption(optionId, replyText = "") {
   const option = findCopilotOption(optionId);
   if (!option) return false;
-  addParsedItems([copilotOptionToItem(option)]);
+  upsertScheduledItems([copilotOptionToItem(option)]);
   updateCopilotOption(optionId, { status: "confirmed" });
   copilotState.messages.push({ role: "assistant", content: replyText || `Đã thêm "${option.title}" vào lịch.` });
   saveCopilotState();
-  autoPlanAndRender();
+  saveState();
+  renderAll();
   return true;
 }
 
@@ -1869,7 +1967,7 @@ function addSmartEvent(options = {}) {
     return;
   }
   const items = drafts.flatMap(createItemsFromDraft);
-  const result = addParsedItems(items);
+  const result = upsertScheduledItems(items);
   setValue("naturalInput", "");
   smartAddState.input = "";
   smartAddState.suggestions = [];
@@ -1883,7 +1981,8 @@ function addSmartEvent(options = {}) {
   document.getElementById("smartSuccess").textContent = result.updated
     ? `Đã cập nhật ${result.updated} event trong calendar.`
     : `Đã thêm ${result.added} event vào calendar.`;
-  autoPlanAndRender();
+  saveState();
+  renderAll();
 }
 
 function openConfirmConflictModal() {
@@ -2257,6 +2356,7 @@ function updateScheduleEvent(target) {
   const field = target.dataset.eventField;
   event[field] = target.value;
   if (field === "start" || field === "end") event.duration = minutesBetween(event.start, event.end);
+  syncItemFromEvent(event);
   saveState();
   renderMetrics();
   renderHabitSummary();
@@ -2274,7 +2374,11 @@ function toggleEventCompleted(id, completed) {
 
 function deleteEvent(id) {
   const event = state.schedule.find((item) => item.id === id);
-  if (event) rememberEventCompleted(event, false);
+  if (event) {
+    rememberEventCompleted(event, false);
+    rememberEventDeleted(event, true);
+    removeItemForDeletedEvent(event);
+  }
   state.schedule = state.schedule.filter((event) => event.id !== id);
   saveState();
   renderAll();
@@ -2323,6 +2427,8 @@ function saveEventModal() {
   event.completed = document.getElementById("modalEventCompleted").checked;
   if (wasCompleted) previousCompletionKeys.forEach((key) => delete state.completedEvents[key]);
   rememberEventCompleted(event, event.completed);
+  rememberEventDeleted(event, false);
+  syncItemFromEvent(event);
   saveState();
   closeEventModal();
   renderAll();
@@ -2466,9 +2572,15 @@ document.getElementById("conflictAlert").addEventListener("click", (event) => {
 document.getElementById("addSmartEvent").addEventListener("click", () => addSmartEvent());
 document.getElementById("parseLocally")?.addEventListener("click", () => {
   const items = parseNaturalLocal(value("naturalInput"));
-  const result = addParsedItems(items);
+  const hasOnlyScheduledItems = items.length > 0 && items.every((item) => item.title && item.date && item.start && item.end);
+  const result = hasOnlyScheduledItems ? upsertScheduledItems(items) : addParsedItems(items);
   setAiState(result.updated ? `Đã thêm ${result.added}, cập nhật ${result.updated} mục trùng` : `Đã thêm ${result.added} mục`);
-  autoPlanAndRender();
+  if (hasOnlyScheduledItems) {
+    saveState();
+    renderAll();
+  } else {
+    autoPlanAndRender();
+  }
 });
 document.getElementById("loadSample").addEventListener("click", loadSample);
 document.getElementById("clearDay").addEventListener("click", () => clearPlannerScope("day"));
