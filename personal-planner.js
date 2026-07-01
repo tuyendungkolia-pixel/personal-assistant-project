@@ -328,6 +328,8 @@ let remoteSyncTimer = null;
 let syncReady = false;
 let syncInFlight = false;
 let copilotRequestInFlight = false;
+let copilotScrollLocked = false;
+let copilotRenderSignature = "";
 
 function hasAuthSession() {
   return Boolean(authState.accessToken);
@@ -1721,10 +1723,15 @@ function renderAll() {
   renderCopilot();
 }
 
-function renderCopilot() {
+function renderCopilot(options = {}) {
   const messages = document.getElementById("copilotMessages");
-  const options = document.getElementById("copilotOptions");
-  if (!messages || !options) return;
+  const optionsPanel = document.getElementById("copilotOptions");
+  if (!messages || !optionsPanel) return;
+  const previousScrollTop = messages.scrollTop;
+  const distanceFromBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight;
+  const isNearBottom = distanceFromBottom < 80;
+  if (isNearBottom) copilotScrollLocked = false;
+  const shouldScrollToBottom = (Boolean(options.forceScroll) || isNearBottom) && !copilotScrollLocked;
   const timeline = [];
   const batchesById = new Map(copilotState.optionBatches.map((batch) => [batch.batchId, batch]));
   if (!copilotState.messages.length) {
@@ -1741,8 +1748,13 @@ function renderCopilot() {
   if (copilotState.error) {
     timeline.push(`<div class="copilot-message assistant copilot-error">${escapeHtml(copilotState.error)}</div>`);
   }
-  messages.innerHTML = timeline.join("");
-  options.innerHTML = "";
+  const html = timeline.join("");
+  const signature = JSON.stringify({
+    html,
+    status: copilotState.status,
+    error: copilotState.error,
+    busy: copilotRequestInFlight
+  });
   const sendButton = document.getElementById("sendCopilot");
   const input = document.getElementById("copilotInput");
   const busy = copilotState.status === "loading" || copilotRequestInFlight;
@@ -1751,7 +1763,15 @@ function renderCopilot() {
     sendButton.textContent = busy ? "Đang tìm..." : "Gửi";
   }
   if (input) input.dataset.loading = busy ? "true" : "false";
-  messages.scrollTop = messages.scrollHeight;
+  if (signature === copilotRenderSignature && messages.innerHTML === html) return;
+  copilotRenderSignature = signature;
+  messages.innerHTML = html;
+  optionsPanel.innerHTML = "";
+  if (shouldScrollToBottom) {
+    messages.scrollTop = messages.scrollHeight;
+  } else {
+    messages.scrollTop = Math.min(previousScrollTop, Math.max(0, messages.scrollHeight - messages.clientHeight));
+  }
 }
 
 function renderCopilotBatch(batch) {
@@ -1926,9 +1946,10 @@ async function sendCopilotMessage() {
   copilotState.messages.push(makeCopilotMessage("user", message));
   copilotState.error = "";
   if (input) input.value = "";
+  copilotScrollLocked = false;
   setCopilotBusy(true);
   localStorage.setItem(COPILOT_STORAGE_KEY, JSON.stringify(copilotStateForRemote()));
-  renderCopilot();
+  renderCopilot({ forceScroll: true });
   try {
     const data = await fetchJsonWithTimeout("/api/calendar-copilot/chat", {
       method: "POST",
@@ -1966,7 +1987,7 @@ async function sendCopilotMessage() {
   } finally {
     setCopilotBusy(false);
     saveCopilotState();
-    renderCopilot();
+    renderCopilot({ forceScroll: true });
   }
 }
 
@@ -2968,6 +2989,11 @@ document.getElementById("copilotMessages").addEventListener("click", (event) => 
   const addButton = event.target.closest("[data-add-copilot-option]");
   if (addButton) addCopilotOption(addButton.dataset.addCopilotOption);
 });
+document.getElementById("copilotMessages").addEventListener("scroll", (event) => {
+  const element = event.currentTarget;
+  const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+  copilotScrollLocked = distanceFromBottom > 120;
+}, { passive: true });
 document.getElementById("copilotMessages").addEventListener("error", (event) => {
   if (event.target.matches(".copilot-option-image")) event.target.hidden = true;
 }, true);
