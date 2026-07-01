@@ -60,12 +60,13 @@ const smartAddState = {
   pendingAddAnyway: false
 };
 const copilotState = loadCopilotState();
+let appUnlockedMemory = false;
 
 function isAppUnlocked() {
   try {
-    return sessionStorage.getItem(APP_LOGIN_STORAGE_KEY) === "true";
+    return sessionStorage.getItem(APP_LOGIN_STORAGE_KEY) === "true" || appUnlockedMemory;
   } catch {
-    return false;
+    return appUnlockedMemory;
   }
 }
 
@@ -73,15 +74,48 @@ function renderAppLock() {
   document.body.classList.toggle("app-locked", !isAppUnlocked());
 }
 
-function unlockApp() {
+function setAppUnlocked(value) {
+  appUnlockedMemory = Boolean(value);
+  try {
+    if (value) sessionStorage.setItem(APP_LOGIN_STORAGE_KEY, "true");
+    else sessionStorage.removeItem(APP_LOGIN_STORAGE_KEY);
+  } catch {
+    // Some file:// browser contexts can block sessionStorage; memory fallback keeps login usable.
+  }
+}
+
+function canUseServerSync() {
+  return location.protocol === "http:" || location.protocol === "https:";
+}
+
+async function unlockApp() {
   const username = value("appLoginUsername").trim();
-  const password = value("appLoginPassword");
+  const password = value("appLoginPassword").trim();
   const error = document.getElementById("appLoginError");
-  if (username === APP_LOGIN_USERNAME && password === APP_LOGIN_PASSWORD) {
-    sessionStorage.setItem(APP_LOGIN_STORAGE_KEY, "true");
+  if (username.toLowerCase() === APP_LOGIN_USERNAME.toLowerCase() && password === APP_LOGIN_PASSWORD) {
     if (error) error.hidden = true;
+    if (canUseServerSync()) {
+      try {
+        const data = await apiJson("/api/app-login", {
+          method: "POST",
+          body: { username, password }
+        });
+        applyAuthResult(data);
+      } catch (loginError) {
+        authState.accessToken = "";
+        authState.refreshToken = "";
+        authState.error = `Chưa đồng bộ server: ${loginError.message}`;
+        saveAuthState();
+        console.warn(authState.error);
+      }
+    } else {
+      authState.configured = false;
+      authState.error = "Đang mở bằng file local nên chưa thể đồng bộ thiết bị.";
+    }
+    setAppUnlocked(true);
     setValue("appLoginPassword", "");
     renderAppLock();
+    if (hasAuthSession()) await syncRemoteState("pull");
     return;
   }
   if (error) {
@@ -91,10 +125,13 @@ function unlockApp() {
 }
 
 function lockApp() {
-  sessionStorage.removeItem(APP_LOGIN_STORAGE_KEY);
+  setAppUnlocked(false);
   renderAppLock();
   document.getElementById("appLoginUsername")?.focus();
 }
+
+window.unlockApp = unlockApp;
+window.lockApp = lockApp;
 
 renderAppLock();
 
@@ -323,8 +360,9 @@ async function refreshAuthSession() {
 function applyAuthResult(data) {
   authState.accessToken = data.accessToken || "";
   authState.refreshToken = data.refreshToken || authState.refreshToken || "";
-  authState.email = data.user?.email || authState.email || "";
+  authState.email = data.user?.email || data.user?.username || authState.email || "";
   authState.userId = data.user?.id || authState.userId || "";
+  authState.configured = true;
   authState.error = "";
   saveAuthState();
   renderSyncUi();
@@ -342,10 +380,16 @@ function clearAuthSession(message = "") {
 
 async function initSync() {
   renderSyncUi();
+  if (!canUseServerSync()) {
+    authState.configured = false;
+    authState.error = "Mở bằng file local nên không đồng bộ được giữa thiết bị.";
+    renderSyncUi();
+    return;
+  }
   try {
     const status = await apiJson("/api/sync/status");
-    authState.configured = Boolean(status.configured);
-    authState.error = status.configured ? "" : `Thiếu cấu hình: ${(status.missing || []).join(", ")}`;
+    authState.configured = Boolean(status.ok);
+    authState.error = "";
     renderSyncUi();
     if (authState.configured && hasAuthSession()) await syncRemoteState("pull");
   } catch (error) {
@@ -356,7 +400,8 @@ async function initSync() {
 }
 
 async function syncRemoteState(mode = "push") {
-  if (!hasAuthSession() || !authState.configured) return;
+  if (!hasAuthSession() || !canUseServerSync()) return;
+  authState.configured = true;
   authState.syncing = true;
   authState.error = "";
   renderSyncUi();
@@ -2291,57 +2336,6 @@ function deleteEventFromModal() {
   deleteEvent(id);
 }
 
-function downloadIcs() {
-  if (!state.schedule.length) return;
-  const ics = buildIcs(state.schedule);
-  const blob = new Blob([ics], { type: "text/calendar;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `personal-plan-${state.weekStart}.ics`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
-function buildIcs(events) {
-  const lines = [
-    "BEGIN:VCALENDAR",
-    "VERSION:2.0",
-    "PRODID:-//Personal Planner V1//VI",
-    "CALSCALE:GREGORIAN"
-  ];
-  events.forEach((event) => {
-    lines.push(
-      "BEGIN:VEVENT",
-      `UID:${event.id}@personal-planner-v1`,
-      `DTSTAMP:${icsDateTime(new Date())}`,
-      `DTSTART:${icsLocalDateTime(event.date, event.start)}`,
-      `DTEND:${icsLocalDateTime(event.date, event.end)}`,
-      `SUMMARY:${icsEscape(event.title)}`,
-      `DESCRIPTION:${icsEscape(`${TYPE_LABELS[event.type] || event.type}${event.completed ? "\\nStatus: done" : ""}${event.notes ? `\\n${event.notes}` : ""}`)}`,
-      `CATEGORIES:${icsEscape(event.completed ? "Done" : TYPE_LABELS[event.type] || event.type)}`,
-      "STATUS:CONFIRMED",
-      "END:VEVENT"
-    );
-  });
-  lines.push("END:VCALENDAR");
-  return lines.join("\r\n");
-}
-
-function icsLocalDateTime(date, time) {
-  return `${date.replaceAll("-", "")}T${time.replace(":", "")}00`;
-}
-
-function icsDateTime(date) {
-  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
-}
-
-function icsEscape(value) {
-  return String(value || "").replace(/[\\,;]/g, "\\$&").replace(/\n/g, "\\n");
-}
-
 function loadSample() {
   const dates = weekDates();
   state.items = [
@@ -2423,7 +2417,6 @@ document.getElementById("calendarHeight")?.addEventListener("input", (event) => 
   renderSchedule();
 });
 document.getElementById("planWeek").addEventListener("click", planWeek);
-document.getElementById("downloadIcs").addEventListener("click", downloadIcs);
 document.getElementById("parseWithAi").addEventListener("click", parseWithAi);
 document.getElementById("naturalInput").addEventListener("keydown", (event) => {
   if (event.key !== "Enter" || event.shiftKey) return;

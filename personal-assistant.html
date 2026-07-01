@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Trợ lý lịch cá nhân</title>
-    <link rel="stylesheet" href="personal-planner.css?v=app-sync-1">
+    <link rel="stylesheet" href="personal-planner.css?v=app-sync-3">
   </head>
   <body class="app-locked">
     <section id="loginScreen" class="login-screen" aria-label="Đăng nhập">
@@ -16,20 +16,20 @@
           <span>Tên đăng nhập</span>
           <div class="login-input-wrap">
             <span aria-hidden="true">👤</span>
-            <input id="appLoginUsername" type="text" autocomplete="username" placeholder="mlinh">
+            <input id="appLoginUsername" type="text" autocomplete="username" placeholder="mlinh" onkeydown="if(event.key==='Enter'){event.preventDefault();document.getElementById('appLoginPassword').focus();}">
           </div>
         </label>
         <label class="login-field">
           <span>Mật khẩu</span>
           <div class="login-input-wrap">
             <span aria-hidden="true">🔒</span>
-            <input id="appLoginPassword" type="password" autocomplete="current-password" placeholder="••••••••">
+            <input id="appLoginPassword" type="password" autocomplete="current-password" placeholder="••••••••" onkeydown="if(event.key==='Enter'){event.preventDefault();window.unlockApp && window.unlockApp();}">
             <button id="toggleAppPassword" type="button">HIỆN</button>
           </div>
         </label>
         <button id="forgotAppPassword" class="forgot-link" type="button">Quên mật khẩu?</button>
         <p id="appLoginError" class="login-error" hidden>Sai tên đăng nhập hoặc mật khẩu.</p>
-        <button id="appLoginSubmit" class="login-submit" type="button">Đăng nhập <span aria-hidden="true">→</span></button>
+        <button id="appLoginSubmit" class="login-submit" type="button" onclick="window.unlockApp && window.unlockApp()">Đăng nhập <span aria-hidden="true">→</span></button>
       </div>
     </section>
     <aside class="app-shell">
@@ -259,6 +259,6 @@
       </section>
     </div>
 
-    <script src="personal-planner.js?v=app-sync-1"></script>
+    <script src="personal-planner.js?v=app-sync-3"></script>
   </body>
 </html>
