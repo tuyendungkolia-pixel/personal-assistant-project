@@ -30,3 +30,15 @@ create policy "Users can update their planner state"
   for update
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
+
+create table if not exists public.app_planner_states (
+  app_user text primary key,
+  planner_state jsonb not null default '{}'::jsonb,
+  copilot_state jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists app_planner_states_updated_at_idx
+  on public.app_planner_states (updated_at desc);
+
+alter table public.app_planner_states enable row level security;

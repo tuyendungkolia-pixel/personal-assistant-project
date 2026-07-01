@@ -2,6 +2,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const os = require("os");
 const { spawn } = require("child_process");
 
 const root = __dirname;
@@ -84,9 +85,21 @@ const server = http.createServer(async (req, res) => {
     const configured = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY && process.env.SUPABASE_SERVICE_ROLE_KEY);
     sendJson(res, 200, {
       ok: true,
-      configured,
+      configured: true,
+      supabaseConfigured: configured,
+      appAuth: true,
       missing: configured ? [] : ["SUPABASE_URL", "SUPABASE_ANON_KEY", "SUPABASE_SERVICE_ROLE_KEY"].filter((key) => !process.env[key])
     });
+    return;
+  }
+
+  if (req.method === "POST" && parsedRequestUrl.pathname === "/api/app-login") {
+    try {
+      const body = await readJson(req);
+      sendJson(res, 200, appLogin(body));
+    } catch (error) {
+      sendJson(res, error.status || 401, { ok: false, error: error.message || "App login failed" });
+    }
     return;
   }
 
@@ -122,7 +135,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "GET" && parsedRequestUrl.pathname === "/api/planner-state") {
     try {
-      const user = await requireSupabaseUser(req);
+      const user = await requirePlannerUser(req);
       sendJson(res, 200, await loadRemotePlannerState(user));
     } catch (error) {
       sendJson(res, error.status || 500, { ok: false, error: error.message || "Load planner state failed" });
@@ -132,7 +145,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "PUT" && parsedRequestUrl.pathname === "/api/planner-state") {
     try {
-      const user = await requireSupabaseUser(req);
+      const user = await requirePlannerUser(req);
       const body = await readJson(req);
       sendJson(res, 200, await saveRemotePlannerState(user, body));
     } catch (error) {
@@ -810,6 +823,66 @@ function supabaseConfig() {
   return { url, anonKey, serviceRoleKey };
 }
 
+function hasSupabaseConfig() {
+  return Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY && process.env.SUPABASE_SERVICE_ROLE_KEY);
+}
+
+function appAuthConfig() {
+  return {
+    username: String(process.env.APP_USERNAME || "mlinh").trim(),
+    password: String(process.env.APP_PASSWORD || "14771010"),
+    secret: String(process.env.APP_AUTH_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.OPENAI_API_KEY || "personal-planner-dev-secret")
+  };
+}
+
+function appLogin(body = {}) {
+  const username = String(body.username || "").trim();
+  const password = String(body.password || "");
+  const config = appAuthConfig();
+  if (username !== config.username || password !== config.password) {
+    const error = new Error("Sai tên đăng nhập hoặc mật khẩu.");
+    error.status = 401;
+    throw error;
+  }
+  const user = { id: `app:${config.username}`, username: config.username, provider: "app" };
+  return {
+    ok: true,
+    accessToken: createAppToken(config.username),
+    refreshToken: "",
+    user,
+    message: "Đăng nhập thành công."
+  };
+}
+
+function createAppToken(username) {
+  const payload = {
+    sub: `app:${username}`,
+    username,
+    provider: "app",
+    exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30
+  };
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = crypto.createHmac("sha256", appAuthConfig().secret).update(body).digest("base64url");
+  return `${body}.${signature}`;
+}
+
+function verifyAppToken(token) {
+  const [body, signature] = String(token || "").split(".");
+  if (!body || !signature) return null;
+  const expected = crypto.createHmac("sha256", appAuthConfig().secret).update(body).digest("base64url");
+  const signatureBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (signatureBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(signatureBuffer, expectedBuffer)) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+    if (!payload?.username || payload.provider !== "app") return null;
+    if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) return null;
+    return { id: `app:${payload.username}`, username: payload.username, appUser: payload.username, provider: "app" };
+  } catch {
+    return null;
+  }
+}
+
 async function supabaseSignup(body = {}) {
   const email = String(body.email || "").trim().toLowerCase();
   const password = String(body.password || "");
@@ -894,7 +967,15 @@ async function requireSupabaseUser(req) {
   return { id: data.id, email: data.email || "" };
 }
 
+async function requirePlannerUser(req) {
+  const token = bearerToken(req);
+  const appUser = verifyAppToken(token);
+  if (appUser) return appUser;
+  return requireSupabaseUser(req);
+}
+
 async function loadRemotePlannerState(user) {
+  if (user.provider === "app") return loadAppPlannerState(user);
   const { url, serviceRoleKey } = supabaseConfig();
   const endpoint = `${url}/rest/v1/planner_states?user_id=eq.${encodeURIComponent(user.id)}&select=planner_state,copilot_state,updated_at`;
   const rows = await supabaseDbFetch(endpoint, { method: "GET", serviceRoleKey });
@@ -910,6 +991,7 @@ async function loadRemotePlannerState(user) {
 }
 
 async function saveRemotePlannerState(user, body = {}) {
+  if (user.provider === "app") return saveAppPlannerState(user, body);
   const { url, serviceRoleKey } = supabaseConfig();
   const endpoint = `${url}/rest/v1/planner_states?on_conflict=user_id`;
   const payload = {
@@ -930,6 +1012,110 @@ async function saveRemotePlannerState(user, body = {}) {
     user,
     updatedAt: row?.updated_at || payload.updated_at
   };
+}
+
+async function loadAppPlannerState(user) {
+  if (hasSupabaseConfig()) {
+    try {
+      return await loadAppPlannerStateFromSupabase(user);
+    } catch (error) {
+      console.warn(`Supabase app state load failed, using file fallback: ${error.message}`);
+    }
+  }
+  return loadAppPlannerStateFromFile(user);
+}
+
+async function saveAppPlannerState(user, body = {}) {
+  if (hasSupabaseConfig()) {
+    try {
+      return await saveAppPlannerStateToSupabase(user, body);
+    } catch (error) {
+      console.warn(`Supabase app state save failed, using file fallback: ${error.message}`);
+    }
+  }
+  return saveAppPlannerStateToFile(user, body);
+}
+
+async function loadAppPlannerStateFromSupabase(user) {
+  const { url, serviceRoleKey } = supabaseConfig();
+  const endpoint = `${url}/rest/v1/app_planner_states?app_user=eq.${encodeURIComponent(user.appUser)}&select=planner_state,copilot_state,updated_at`;
+  const rows = await supabaseDbFetch(endpoint, { method: "GET", serviceRoleKey });
+  const row = Array.isArray(rows) ? rows[0] : null;
+  return {
+    ok: true,
+    user,
+    found: Boolean(row),
+    plannerState: row?.planner_state || null,
+    copilotState: row?.copilot_state || null,
+    updatedAt: row?.updated_at || "",
+    storage: "supabase"
+  };
+}
+
+async function saveAppPlannerStateToSupabase(user, body = {}) {
+  const { url, serviceRoleKey } = supabaseConfig();
+  const endpoint = `${url}/rest/v1/app_planner_states?on_conflict=app_user`;
+  const payload = {
+    app_user: user.appUser,
+    planner_state: sanitizeRemoteState(body.plannerState),
+    copilot_state: sanitizeRemoteState(body.copilotState),
+    updated_at: new Date().toISOString()
+  };
+  const rows = await supabaseDbFetch(endpoint, {
+    method: "POST",
+    serviceRoleKey,
+    headers: { "Prefer": "resolution=merge-duplicates,return=representation" },
+    body: payload
+  });
+  const row = Array.isArray(rows) ? rows[0] : null;
+  return {
+    ok: true,
+    user,
+    updatedAt: row?.updated_at || payload.updated_at,
+    storage: "supabase"
+  };
+}
+
+function plannerFileStorePath() {
+  return process.env.PLANNER_STATE_FILE || path.join(os.tmpdir(), "personal-assistant-planner-state-store.json");
+}
+
+function readPlannerFileStore() {
+  try {
+    return JSON.parse(fs.readFileSync(plannerFileStorePath(), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function writePlannerFileStore(store) {
+  fs.writeFileSync(plannerFileStorePath(), JSON.stringify(store, null, 2));
+}
+
+function loadAppPlannerStateFromFile(user) {
+  const store = readPlannerFileStore();
+  const row = store[user.appUser] || null;
+  return {
+    ok: true,
+    user,
+    found: Boolean(row),
+    plannerState: row?.plannerState || null,
+    copilotState: row?.copilotState || null,
+    updatedAt: row?.updatedAt || "",
+    storage: "file"
+  };
+}
+
+function saveAppPlannerStateToFile(user, body = {}) {
+  const store = readPlannerFileStore();
+  const updatedAt = new Date().toISOString();
+  store[user.appUser] = {
+    plannerState: sanitizeRemoteState(body.plannerState),
+    copilotState: sanitizeRemoteState(body.copilotState),
+    updatedAt
+  };
+  writePlannerFileStore(store);
+  return { ok: true, user, updatedAt, storage: "file" };
 }
 
 function sanitizeRemoteState(value) {
